@@ -1,0 +1,188 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-line: var(--line);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-accent: var(--accent);
+  --color-accent-ink: var(--accent-ink);
+  --color-accent-soft: var(--accent-soft);
+  --color-danger: var(--danger);
+  --color-online: var(--online);
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, "Noto Sans", "Noto Sans Devanagari", sans-serif;
+}
+
+:root {
+  color-scheme: light dark;
+  --bg: #faf6f3;
+  --surface: #ffffff;
+  --surface-2: #f3ece7;
+  --line: #e8dfd8;
+  --ink: #211b18;
+  --muted: #7d716a;
+  --accent: #e11d48;
+  --accent-ink: #ffffff;
+  --accent-soft: #ffe4ea;
+  --danger: #dc2626;
+  --online: #16a34a;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #110e0d;
+    --surface: #1c1817;
+    --surface-2: #28221f;
+    --line: #362e2b;
+    --ink: #f6f0ec;
+    --muted: #a3958d;
+    --accent: #f43f5e;
+    --accent-ink: #ffffff;
+    --accent-soft: #3d1520;
+    --danger: #f87171;
+    --online: #4ade80;
+  }
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  @apply bg-bg font-sans text-ink antialiased;
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* --app-h follows the visual viewport so the composer stays above the iOS keyboard. */
+.app-height {
+  height: var(--app-h, 100dvh);
+}
+
+button {
+  cursor: pointer;
+}
+
+/* ─── Sheets ─── */
+
+dialog.sheet {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: var(--app-h, 100%);
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  overflow: hidden;
+}
+
+dialog.sheet::backdrop {
+  background: rgb(0 0 0 / 0.45);
+}
+
+.sheet-panel {
+  position: absolute;
+  inset-inline: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100% - 1.5rem - env(safe-area-inset-top));
+  border-radius: 1.25rem 1.25rem 0 0;
+  background: var(--surface);
+  padding-bottom: env(safe-area-inset-bottom);
+  animation: sheet-in 0.24s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+@media (min-width: 640px) {
+  .sheet-panel {
+    inset-inline: auto;
+    left: 50%;
+    top: 50%;
+    bottom: auto;
+    translate: -50% -50%;
+    width: min(32rem, calc(100% - 2rem));
+    max-height: 85%;
+    border-radius: 1.25rem;
+    padding-bottom: 0;
+  }
+}
+
+@keyframes sheet-in {
+  from {
+    transform: translateY(1.5rem);
+    opacity: 0;
+  }
+}
+
+/* ─── Toasts (top-layer popover) ─── */
+
+.toaster {
+  position: fixed;
+  inset: auto;
+  top: calc(env(safe-area-inset-top) + 0.75rem);
+  left: 50%;
+  translate: -50% 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  width: max-content;
+  max-width: calc(100vw - 2rem);
+  z-index: 50;
+  pointer-events: none;
+}
+
+.toaster > div {
+  animation: sheet-in 0.2s ease-out;
+}
+
+/* ─── Avatars: hue from the name, tuned per theme ─── */
+
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  border-radius: 9999px;
+  font-weight: 600;
+  line-height: 1;
+  background: hsl(var(--h) 72% 88%);
+  color: hsl(var(--h) 45% 27%);
+}
+
+@media (prefers-color-scheme: dark) {
+  .avatar {
+    background: hsl(var(--h) 28% 24%);
+    color: hsl(var(--h) 70% 84%);
+  }
+}
+
+/* Long-press menus on chat bubbles replace the native text callout. */
+.no-callout {
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
