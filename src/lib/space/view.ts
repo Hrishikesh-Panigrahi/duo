@@ -8,6 +8,7 @@ import {
 } from '../e2e'
 import type { Contact, List, ListItem, Member, Message, Note, Space, StoredMember, StoredMessage, StoredSpace } from '../types'
 import { legacy, type Rows } from './rows'
+import { shapes } from './shapes'
 
 /** Plaintext by context + ciphertext; FAILED marks something that wouldn't decrypt. */
 export type PlainCache = ReadonlyMap<string, unknown>
@@ -102,6 +103,18 @@ export function deriveView({ spaceId, rows, space, members, plain }: ViewInput):
 
 export type Decryption = { key: string; run: () => Promise<unknown> }
 
+/** Anything that decrypts but isn't the shape it should be counts as undecryptable. */
+function checkedJob(key: string, run: () => Promise<unknown>, valid: (v: unknown) => boolean): Decryption {
+  return {
+    key,
+    run: async () => {
+      const value = await run()
+      if (!valid(value)) throw new Error('Not the expected shape')
+      return value
+    },
+  }
+}
+
 /** Everything that has ciphertext this device hasn't decrypted (or started to) yet. */
 export function pendingDecryptions(
   key: CryptoKey,
@@ -109,22 +122,21 @@ export function pendingDecryptions(
   known: (cacheKey: string) => boolean,
 ): Decryption[] {
   const jobs: Decryption[] = []
-  const add = (context: string, cipher: string | null | undefined, run: (c: string) => Promise<unknown>) => {
-    if (!cipher || known(cacheKey(context, cipher))) return
-    jobs.push({ key: cacheKey(context, cipher), run: () => run(cipher) })
+  const add = (context: string, cipher: string | null | undefined, valid: (v: unknown) => boolean, run: (c: string) => Promise<unknown>) => {
+    if (cipher && !known(cacheKey(context, cipher))) jobs.push(checkedJob(cacheKey(context, cipher), () => run(cipher), valid))
   }
-  const addRecord = (context: string, cipher: string | null | undefined) =>
-    add(context, cipher, (c) => decryptRecord(key, context, c))
+  const addRecord = (context: string, cipher: string | null | undefined, valid: (v: unknown) => boolean) =>
+    add(context, cipher, valid, (c) => decryptRecord(key, context, c))
 
-  for (const r of rows.contacts) addRecord(contexts.contact(spaceId, r.id), r.cipher)
-  for (const r of rows.notes) addRecord(contexts.note(spaceId, r.id), r.cipher)
-  for (const r of rows.lists) addRecord(contexts.list(spaceId, r.id), r.cipher)
-  for (const r of rows.list_items) addRecord(contexts.item(spaceId, r.list_id, r.id), r.cipher)
+  for (const r of rows.contacts) addRecord(contexts.contact(spaceId, r.id), r.cipher, shapes.contact)
+  for (const r of rows.notes) addRecord(contexts.note(spaceId, r.id), r.cipher, shapes.note)
+  for (const r of rows.lists) addRecord(contexts.list(spaceId, r.id), r.cipher, shapes.list)
+  for (const r of rows.list_items) addRecord(contexts.item(spaceId, r.list_id, r.id), r.cipher, shapes.item)
   for (const r of rows.messages) {
     const ids: MessageIds = { spaceId, senderId: r.sender_id, messageId: r.id }
-    add(contexts.message(ids), r.cipher, (c) => decryptMessage(key, ids, c))
+    add(contexts.message(ids), r.cipher, shapes.message, (c) => decryptMessage(key, ids, c))
   }
-  if (space) addRecord(contexts.spaceName(spaceId), space.name_cipher)
-  for (const m of members) addRecord(contexts.memberName(spaceId, m.user_id), m.display_name_cipher)
+  if (space) addRecord(contexts.spaceName(spaceId), space.name_cipher, shapes.name)
+  for (const m of members) addRecord(contexts.memberName(spaceId, m.user_id), m.display_name_cipher, shapes.name)
   return jobs
 }

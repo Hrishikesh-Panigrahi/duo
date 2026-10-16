@@ -45,8 +45,12 @@ async function shrinkImage(file: File): Promise<{ bytes: ArrayBuffer; info: Medi
   return { bytes: await blob.arrayBuffer(), info: { kind: 'image', mime: 'image/jpeg', size: blob.size, width, height } }
 }
 
+/** The only types a photo or video is sent or opened as: never SVG or a page, which could carry code. */
+export const PLAYABLE_TYPE = /^(image\/(?!svg)[\w.+-]+|video\/[\w.+-]+)$/i
+
 /** Shrinks photos to a sensible size; checks videos against the size limit. */
 export async function prepareMedia(file: File): Promise<{ bytes: ArrayBuffer; info: MediaInfo }> {
+  if (!PLAYABLE_TYPE.test(file.type)) throw new Error('Only photos and videos can be sent.')
   if (file.type.startsWith('image/')) {
     try {
       return await shrinkImage(file)
@@ -56,9 +60,6 @@ export async function prepareMedia(file: File): Promise<{ bytes: ArrayBuffer; in
       return { bytes: await file.arrayBuffer(), info: { kind: 'image', mime: file.type, size: file.size } }
     }
   }
-  if (file.type.startsWith('video/')) {
-    checkSize(file.size, 'video')
-    return { bytes: await file.arrayBuffer(), info: { kind: 'video', mime: file.type, size: file.size } }
-  }
-  throw new Error('Only photos and videos can be sent.')
+  checkSize(file.size, 'video')
+  return { bytes: await file.arrayBuffer(), info: { kind: 'video', mime: file.type, size: file.size } }
 }

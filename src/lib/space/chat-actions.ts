@@ -2,7 +2,7 @@
 // other phone when both apps are open; otherwise it waits in Storage, encrypted, for up to MEDIA_TTL_DAYS.
 import { contexts, decryptBytes, encryptBytes, encryptMessage, type MessageContent, type MessageIds } from '../e2e'
 import { inbox } from '../inbox'
-import { isExpired, mediaPath, prepareMedia } from '../media'
+import { PLAYABLE_TYPE, isExpired, mediaPath, prepareMedia } from '../media'
 import { must, serverError, supabase } from '../supabase'
 import { toCard, type Message, type StoredMessage } from '../types'
 import type { ContactCard } from '../vcard'
@@ -46,7 +46,9 @@ export class ChatActions extends StoreActions {
     const encrypted = (await inbox.get(m.id).catch(() => undefined)) ?? (await this.download(m))
     const ids = { spaceId: this.store.spaceId, senderId: m.sender_id, messageId: m.id }
     const bytes = await decryptBytes(key, contexts.media(ids), encrypted)
-    return URL.createObjectURL(new Blob([bytes], { type: m.media?.mime ?? 'application/octet-stream' }))
+    // The type comes from the sender, so it's only used if it's a photo or video type.
+    const type = m.media && PLAYABLE_TYPE.test(m.media.mime) ? m.media.mime : 'application/octet-stream'
+    return URL.createObjectURL(new Blob([bytes], { type }))
   }
 
   /** Deletes a photo or video's file, wherever it was, and marks it opened. */

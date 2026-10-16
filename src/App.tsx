@@ -3,6 +3,7 @@ import type { User } from '@supabase/supabase-js'
 import { isConfigured, serverError, supabase } from './lib/supabase'
 import { SpaceProvider } from './lib/store'
 import { Button, Splash, Toaster, errorMessage, toast } from './components/ui'
+import { ErrorBoundary } from './components/error-boundary'
 import { pendingInvite } from './lib/invite'
 import { AuthLayout, AuthScreen, NewPasswordScreen, useAuth } from './features/auth'
 import { SpaceSetup } from './features/space-setup'
@@ -11,7 +12,7 @@ import { Shell } from './features/shell'
 export default function App() {
   return (
     <>
-      {isConfigured ? <Root /> : <NotConfigured />}
+      <ErrorBoundary>{isConfigured ? <Root /> : <NotConfigured />}</ErrorBoundary>
       <Toaster />
     </>
   )

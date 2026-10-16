@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Film, Image, X } from 'lucide-react'
 import { useSpace } from '../lib/store'
 import type { Message } from '../lib/types'
-import { checkSize, isExpired } from '../lib/media'
+import { PLAYABLE_TYPE, checkSize, isExpired } from '../lib/media'
 import { Button, IconButton, Sheet, Spinner, cx, errorMessage } from '../components/ui'
 
 type MediaBubbleProps = { message: Message; mine: boolean; stamp: ReactNode; onOpen: (m: Message) => void }
@@ -53,7 +53,8 @@ export function MediaSendSheet({ file, onClose, onSend }: { file: File | null; o
 
 /** Why this file can't be sent, or null. */
 function sendProblem(file: File): string | null {
-  if (!file.type.startsWith('video/')) return file.type.startsWith('image/') ? null : 'Only photos and videos can be sent.'
+  if (!PLAYABLE_TYPE.test(file.type)) return 'Only photos and videos can be sent.'
+  if (!file.type.startsWith('video/')) return null
   try {
     checkSize(file.size, 'video')
     return null
@@ -71,7 +72,7 @@ function MediaSendBody({ file, onSend }: { file: File; onSend: (file: File) => v
   }, [file])
   const video = file.type.startsWith('video/')
   const problem = sendProblem(file)
-  const showPreview = url && (video || file.type.startsWith('image/'))
+  const showPreview = url && PLAYABLE_TYPE.test(file.type)
   return (
     <div className="space-y-4">
       <div className="flex max-h-[45dvh] justify-center overflow-hidden rounded-2xl bg-black">
