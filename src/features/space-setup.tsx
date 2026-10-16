@@ -1,14 +1,16 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Copy, Share2 } from 'lucide-react'
 import { must, supabase } from '../lib/supabase'
 import { signOut } from '../lib/session'
+import { formatCode, inviteLink, pendingInvite } from '../lib/invite'
 import { Button, Field, Input, errorMessage, toast, toastError } from '../components/ui'
 import { AuthLayout } from './auth'
 
-export const formatCode = (code: string) => code.replace(/^(.{4})(.+)$/, '$1-$2')
-
 export async function shareInvite(code: string) {
-  const text = `Join me on Duo! Open ${location.origin}, create an account, and enter our code: ${formatCode(code)}`
+  // The passphrase never goes in the invite: it's shared in person.
+  const text = `Join me on Duo: ${inviteLink(code)}
+
+Our passphrase isn't in the link; I'll tell you in person.`
   if (navigator.share) {
     try {
       await navigator.share({ text })
@@ -30,9 +32,9 @@ export function InviteCode({ code }: { code: string }) {
           size="sm"
           variant="secondary"
           icon={<Copy />}
-          onClick={() => navigator.clipboard.writeText(formatCode(code)).then(() => toast('Code copied'), toastError)}
+          onClick={() => navigator.clipboard.writeText(inviteLink(code)).then(() => toast('Link copied'), toastError)}
         >
-          Copy
+          Copy link
         </Button>
         <Button size="sm" icon={<Share2 />} onClick={() => shareInvite(code).catch(toastError)}>
           Send invite
@@ -42,25 +44,45 @@ export function InviteCode({ code }: { code: string }) {
   )
 }
 
-/** First run after signing in: start a space, or join your person's with their code. */
+/**
+ * First run after signing in: start a space, or join your person's with their
+ * code. Opened from an invite link, it joins straight away.
+ */
 export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceId: string) => void }) {
-  const [mode, setMode] = useState<'create' | 'join'>('create')
-  const [code, setCode] = useState('')
+  const [invited] = useState(() => pendingInvite.get())
+  const [mode, setMode] = useState<'create' | 'join'>(invited ? 'join' : 'create')
+  const [code, setCode] = useState(invited ? formatCode(invited) : '')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  async function submit(e: FormEvent) {
-    e.preventDefault()
+  async function go(how: 'create' | 'join', joinCode: string) {
     setBusy(true)
     setError(null)
     try {
       // Names are asked for after the passphrase, so they can be encrypted.
-      onReady(await must<string>(mode === 'create' ? supabase.rpc('create_space') : supabase.rpc('join_space', { code })))
+      const id = await must<string>(how === 'create' ? supabase.rpc('create_space') : supabase.rpc('join_space', { code: joinCode }))
+      pendingInvite.clear()
+      onReady(id)
     } catch (err) {
-      setError(errorMessage(err))
-    } finally {
+      const msg = errorMessage(err)
+      // A used-up or wrong code won't start working; a dropped connection might.
+      if (!/reach the server/i.test(msg)) pendingInvite.clear()
+      setError(msg)
       setBusy(false)
     }
+  }
+
+  // From an invite link: join once, without asking.
+  const autoJoined = useRef(false)
+  useEffect(() => {
+    if (!invited || autoJoined.current) return
+    autoJoined.current = true
+    void go('join', invited)
+  }, [invited])
+
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    void go(mode, code)
   }
 
   return (
@@ -82,6 +104,9 @@ export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceI
         ))}
       </div>
       <form onSubmit={submit} className="space-y-4">
+        {invited && busy && mode === 'join' && !error && (
+          <p className="text-center text-sm text-muted">Joining the space you were invited to…</p>
+        )}
         {mode === 'create' ? (
           <p className="text-sm text-muted">
             You'll pick a passphrase next, then get an invite code to send your person. Only the two of you can ever join.

@@ -71,7 +71,7 @@ function SettingsBody() {
           </div>
         ) : space?.invite_code ? (
           <>
-            <p className="text-sm">They haven't joined yet. Send them this code; it stops working once they're in.</p>
+            <p className="text-sm">They haven't joined yet. Send them the invite link (or the code); it stops working once they're in.</p>
             <InviteCode code={space.invite_code} />
           </>
         ) : null}

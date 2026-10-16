@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
 import { isConfigured, serverError, supabase } from './lib/supabase'
 import { SpaceProvider } from './lib/store'
-import { Button, Splash, Toaster, errorMessage } from './components/ui'
+import { Button, Splash, Toaster, errorMessage, toast } from './components/ui'
+import { pendingInvite } from './lib/invite'
 import { AuthLayout, AuthScreen, NewPasswordScreen, useAuth } from './features/auth'
 import { SpaceSetup } from './features/space-setup'
 import { Shell } from './features/shell'
@@ -38,8 +39,14 @@ function SpaceGate({ user }: { user: User }) {
       .maybeSingle()
       .then(({ data, error }) => {
         if (!alive) return
-        if (error) setError(errorMessage(serverError(error)))
-        else setSpaceId(data?.space_id ?? null)
+        if (error) return setError(errorMessage(serverError(error)))
+        // Each account belongs to one space, so an invite opened after
+        // joining one has nothing to do.
+        if (data?.space_id && pendingInvite.get()) {
+          pendingInvite.clear()
+          toast("You're already in a space, so that invite wasn't used")
+        }
+        setSpaceId(data?.space_id ?? null)
       })
     return () => {
       alive = false

@@ -141,7 +141,7 @@ export function MenuItem({
       type="button"
       onClick={onClick}
       className={cx(
-        'flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left font-medium transition hover:bg-surface-2 [&_svg]:size-5',
+        'flex h-12 w-full items-center gap-3 rounded-xl px-3 text-left font-medium transition select-none hover:bg-surface-2 [&_svg]:size-5',
         danger ? 'text-danger' : 'text-ink',
       )}
     >
@@ -212,7 +212,7 @@ export function Sheet({
       {open && (
         <div className="sheet-panel">
           <header className="flex shrink-0 items-center gap-1 py-2 pr-2 pl-5">
-            <h2 className="min-w-0 flex-1 truncate text-lg font-semibold">{title}</h2>
+            <h2 className="min-w-0 flex-1 truncate text-lg font-semibold select-none">{title}</h2>
             {actions}
             <IconButton label="Close" onClick={onClose}>
               <X />
