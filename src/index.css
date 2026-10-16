@@ -1,4 +1,9 @@
 @import "tailwindcss";
+/* Docs, rules and scripts are not UI: keep Tailwind from turning words in them into CSS. */
+@source not "../docs";
+@source not "../scripts";
+@source not "../.claude";
+@source not "../CLAUDE.md";
 
 @theme inline {
   --color-bg: var(--bg);
