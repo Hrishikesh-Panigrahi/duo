@@ -8,8 +8,9 @@ It's an installable web app (PWA): open it on your phones, "Add to Home Screen",
   Import from your phone (Android) or a .vcf export (iPhone, Google Contacts).
 - **Chat**: realtime messages, "typing…" and online status, unread badge. Send a contact card to the other person,
   who can save it to their phone in one tap. Long-press a message to copy it, save it as a note, or delete it.
-- **View-once photos and videos**: opened once, then deleted. Unopened ones are deleted after 14 days. Videos can be
-  up to 45 MB; photos are shrunk on the phone before sending.
+- **View-once photos and videos**: opened once, then deleted. If you're both in the app, they go straight from one
+  phone to the other and are never stored anywhere else. If not, they wait (encrypted) for up to 3 days, then are
+  deleted unopened. Videos can be up to 45 MB; photos are shrunk on the phone before sending.
 - **Lists**: shared checklists with due dates. **Coming up** shows birthdays from your contacts and anything due soon.
 - **Notes**: shared notes that save as you type; pin the important ones.
 
@@ -22,6 +23,25 @@ name are encrypted on the phone (AES-256-GCM, key derived with PBKDF2), so the s
 Row-level security also means only the two people in a space can fetch even that. What the server can still see:
 your login emails, that you share a space, when things are added or changed, and rough sizes. If you both forget the
 passphrase, the space can't be decrypted by anyone.
+
+Beyond the encryption:
+
+- **Direct transfers** use WebRTC (itself encrypted with DTLS) on top of the end-to-end encryption, and the messages
+  that set them up are sealed with your key and refused if they're more than 2 minutes old, so nobody can join in,
+  pose as one of your phones, or replay an old connection. The only outside server involved is Cloudflare's STUN
+  server, which tells each phone its public address; there's no relay, so a file goes phone to phone or not at all.
+- **The live room** (who's online, typing, setting up transfers) is a private Realtime channel that only the two
+  members of a space may join, listen to or send on.
+- **Once a space is encrypted, nothing unencrypted is ever shown or trusted.** A row without ciphertext could only
+  have been written by someone with database access, so the app ignores it.
+- **Browser-enforced rules** (a content security policy and related headers, in `dist/_headers`) only let the app run
+  its own code and talk to its own Supabase project, and stop other sites framing it.
+- **Errors never show database details**, the encryption key can't be exported even by the app, nothing you share is
+  kept in the offline cache, and the build ships no source maps.
+
+What it can't protect against: a screenshot or another camera, someone using your unlocked phone, a weak passphrase
+(the app refuses obvious ones and can suggest a strong one), or someone who takes over your Supabase, Cloudflare or
+GitHub account and changes the app's code. Turn on two-factor sign-in for all three.
 
 ## Run it locally
 
@@ -38,7 +58,9 @@ npm run dev
 To try it as two people on one computer, use two different origins (they keep separate logins), e.g.
 <http://localhost:5173> and <http://you.localhost:5173>.
 
-`npm test` runs the unit tests (encryption, vCard import/export, birthday maths, media limits).
+`npm test` runs the unit tests (encryption, passphrases, direct-transfer framing, error messages, vCard
+import/export, birthday maths, media limits). `npm run build && npm run preview` serves the production build with
+its real security headers.
 `npx supabase stop` shuts the local stack down.
 
 ## Put it online
@@ -56,7 +78,8 @@ To try it as two people on one computer, use two different origins (they keep se
    invite code. The other signs up, enters the code, then the passphrase. The code stops working once the second
    person is in.
 5. **Lock it down.** Once you've both joined, turn off **Allow new users to sign up** in Supabase. Strangers
-   couldn't see your data anyway, but there's no reason to let anyone create accounts.
+   couldn't see your data anyway, but there's no reason to let anyone create accounts. Also turn on two-factor
+   sign-in for your Supabase, Cloudflare and GitHub accounts: whoever controls those controls the app's code.
 
 ### Hosting it yourself instead (e.g. an Oracle Cloud free VM)
 
@@ -74,7 +97,8 @@ served from the same box behind Caddy or nginx with a TLS certificate. Trade-off
 
 - **Database: 500 MB.** Text is tiny, so that's well over a million messages. If it fills up, the database turns
   read-only; nothing is charged.
-- **File storage: 1 GB, 50 MB per file.** View-once files are deleted after opening, so this stays nearly empty.
+- **File storage: 1 GB, 50 MB per file.** Only photos and videos sent while the other person is away are stored,
+  and they're deleted once opened or after 3 days, so this stays nearly empty.
 - **Data transfer: 5 GB a month** (plus 5 GB cached). Photos barely count; large videos do.
 - **Free projects pause after a week of no use**; resume them from the Supabase dashboard.
 
@@ -84,7 +108,10 @@ served from the same box behind Caddy or nginx with a TLS certificate. Trade-off
 supabase/migrations/   schema, row-level security, ciphertext-only rules, media bucket and its policies
 src/lib/e2e.ts         key derivation and encryption; every ciphertext is bound to what it is and where it belongs
 src/lib/store.tsx      loads a space's data, keeps it live over Realtime, and decrypts/encrypts it on the device
+src/lib/direct.ts      phone-to-phone delivery of photos and videos over WebRTC
+src/lib/inbox.ts       where a directly delivered file waits, still encrypted, until it's opened
 src/lib/media.ts       view-once photos and videos: shrinking, size limits, expiry
+src/lib/passphrase.ts  refusing guessable passphrases, and suggesting strong ones
 src/lib/vcard.ts       vCard 2.1/3.0/4.0 parsing and export
 src/features/          auth, space setup, and one file per tab (chat, contacts, lists, notes) + settings
 ```

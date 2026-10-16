@@ -71,24 +71,25 @@ export function Shell() {
 }
 
 function ShellReady() {
-  const { space, userId, partner, partnerOnline, partnerTyping, messages, legacyRows, actions } = useSpace()
+  const { space, userId, partner, partnerOnline, partnerTyping, messages, actions } = useSpace()
   const [tab, setTabState] = useState<Tab>(() => (storage.get('duo:tab') as Tab | null) ?? 'chat')
   const [focusContactId, setFocusContactId] = useState<string | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const visible = useDocumentVisible()
   const keyboardOpen = useKeyboardOpen()
 
-  // Encrypt anything saved before encryption was on, and clear out photos
-  // and videos that were opened or expired. Once per visit.
+  // Encrypt anything saved before encryption was on (after which this device
+  // ignores anything unencrypted), and clear out photos and videos that were
+  // opened or expired. Once per visit.
   const upgraded = useRef(false)
   useEffect(() => {
-    if (upgraded.current || legacyRows === 0) return
+    if (upgraded.current) return
     upgraded.current = true
     actions
       .upgradeLegacy()
       .then((n) => n && toast(`Encrypted ${n} older item${n === 1 ? '' : 's'}`))
       .catch(toastError)
-  }, [legacyRows, actions])
+  }, [actions])
   useEffect(() => {
     actions.sweepMedia().catch(() => {})
   }, [actions])
