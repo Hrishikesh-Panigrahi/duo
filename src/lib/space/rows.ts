@@ -1,5 +1,4 @@
-// A space's rows exactly as stored: ciphertext plus the ids and timestamps the
-// server needs. What the screens show is derived from these (see view.ts).
+// A space's rows exactly as stored: ciphertext plus the ids and timestamps the server needs.
 import type {
   ContactContent,
   ItemContent,
@@ -26,9 +25,8 @@ export const TABLES: Table[] = ['contacts', 'messages', 'notes', 'lists', 'list_
 /** Only the newest messages are loaded. */
 export const MESSAGE_LIMIT = 500
 
-export const time = (iso: string) => new Date(iso).getTime()
-const byCreated = (a: AnyRow, b: AnyRow) => time(a.created_at) - time(b.created_at)
-export const sorted = <T extends AnyRow>(rows: T[]) => [...rows].sort(byCreated)
+/** Oldest first. */
+export const sorted = <T extends AnyRow>(rows: T[]) => [...rows].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
 
 export const emptyRows: Rows = { contacts: [], messages: [], notes: [], lists: [], list_items: [] }
 
@@ -62,8 +60,7 @@ export function rowsReducer(state: Rows, a: RowAction): Rows {
   }
 }
 
-// Every write also clears the old plaintext columns, so rows from before
-// encryption pass the database's ciphertext-only rules once they're updated.
+// Every write clears the old plaintext columns, so rows from before encryption pass the database's rules.
 export const CLEARED = {
   contacts: {
     full_name: null,

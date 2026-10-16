@@ -1,55 +1,63 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { contexts, encryptRecord } from '../e2e'
-import type { createDirectLink } from '../direct'
-import { joinRoom, presenceGate, type RealtimeClient, type RoomChannel } from './room'
+import { contexts, decryptRecord, encryptRecord } from '../e2e'
+import type { DirectLink, LinkOptions } from '../direct'
+import { PresenceGate, Room, type RealtimeClient, type RoomChannel } from './room'
 
 const S = 'space-1'
 const ME = 'user-me'
 const YOU = 'user-you'
 
 // ── A fake Realtime connection the tests can drive ──
-type FakeChannel = RoomChannel & {
-  presence: (Record<string, unknown> | null)[]
-  sent: { event: string; payload: Record<string, unknown> }[]
-  status: (s: string) => void
-  syncPresence: (state: Record<string, { direct?: boolean }[]>) => void
-  broadcast: (event: string, payload: Record<string, unknown>) => void
+type Payload = Record<string, unknown>
+class FakeChannel implements RoomChannel {
+  presence: (Payload | null)[] = []
+  sent: { event: string; payload: Payload }[] = []
+  private presenceListeners: (() => void)[] = []
+  private broadcastListeners = new Map<string, ((m: { payload?: Payload }) => void)[]>()
+  private onStatus: (s: string) => void = () => {}
+  private state: Record<string, { direct?: boolean }[]> = {}
+
+  constructor(readonly topic: string) {}
+
+  on(type: string, filter: { event: string }, cb: never) {
+    if (type === 'presence') this.presenceListeners.push(cb)
+    else this.broadcastListeners.set(filter.event, [...(this.broadcastListeners.get(filter.event) ?? []), cb])
+    return this
+  }
+  subscribe(cb: (s: string) => void) {
+    this.onStatus = cb
+  }
+  presenceState() {
+    return this.state
+  }
+  async track(p: Payload) {
+    this.presence.push(p)
+  }
+  async untrack() {
+    this.presence.push(null)
+  }
+  async send(m: { event: string; payload: Payload }) {
+    this.sent.push({ event: m.event, payload: m.payload })
+    return 'ok'
+  }
+
+  status(s: string) {
+    this.onStatus(s)
+  }
+  syncPresence(state: Record<string, { direct?: boolean }[]>) {
+    this.state = state
+    this.presenceListeners.forEach((f) => f())
+  }
+  broadcast(event: string, payload: Payload) {
+    this.broadcastListeners.get(event)?.forEach((f) => f({ payload }))
+  }
 }
+
 function fakeRealtime() {
   const channels: FakeChannel[] = []
   const rt: RealtimeClient = {
     channel(name) {
-      const presenceCbs: (() => void)[] = []
-      const broadcastCbs = new Map<string, ((m: { payload?: Record<string, unknown> }) => void)[]>()
-      let onStatus: (s: string) => void = () => {}
-      let state: Record<string, { direct?: boolean }[]> = {}
-      const ch: FakeChannel = {
-        topic: `realtime:${name}`,
-        presence: [],
-        sent: [],
-        on(type: string, filter: { event: string }, cb: never) {
-          if (type === 'presence') presenceCbs.push(cb)
-          else broadcastCbs.set(filter.event, [...(broadcastCbs.get(filter.event) ?? []), cb])
-          return ch
-        },
-        subscribe(cb) {
-          onStatus = cb
-          return ch
-        },
-        presenceState: () => state,
-        track: async (p) => void ch.presence.push(p),
-        untrack: async () => void ch.presence.push(null),
-        send: async (m) => {
-          ch.sent.push({ event: m.event, payload: m.payload })
-          return 'ok'
-        },
-        status: (s) => onStatus(s),
-        syncPresence: (st) => {
-          state = st
-          presenceCbs.forEach((f) => f())
-        },
-        broadcast: (event, payload) => broadcastCbs.get(event)?.forEach((f) => f({ payload })),
-      } as FakeChannel
+      const ch = new FakeChannel(`realtime:${name}`)
       channels.push(ch)
       return ch
     },
@@ -61,11 +69,11 @@ function fakeRealtime() {
 
 function fakeLink() {
   const link = { sendFile: vi.fn(async () => {}), handleSignal: vi.fn(), close: vi.fn() }
-  let opts: Parameters<typeof createDirectLink>[0] | undefined
-  const create = ((o: Parameters<typeof createDirectLink>[0]) => {
+  let opts: LinkOptions | undefined
+  const create = (o: LinkOptions) => {
     opts = o
-    return link
-  }) as unknown as typeof createDirectLink
+    return link as unknown as DirectLink
+  }
   return { link, create, opts: () => opts! }
 }
 
@@ -89,7 +97,7 @@ async function setUp(over: { key?: CryptoKey | null; visible?: boolean } = {}) {
   const state = { key: over.key === undefined ? key : over.key, visible: over.visible ?? true }
   const onPartner = vi.fn()
   const onTyping = vi.fn()
-  const room = joinRoom({
+  const room = new Room({
     spaceId: S,
     userId: ME,
     getKey: () => state.key,
@@ -110,7 +118,7 @@ async function setUp(over: { key?: CryptoKey | null; visible?: boolean } = {}) {
 describe('presence budget', () => {
   it('sends only real changes', () => {
     const sent: (string | null)[] = []
-    const gate = presenceGate({ send: (s) => sent.push(s), canSend: () => true })
+    const gate = new PresenceGate({ send: (s) => sent.push(s), canSend: () => true })
     gate.want('{"direct":true}')
     gate.want('{"direct":true}')
     gate.want('{"direct":true}')
@@ -119,7 +127,7 @@ describe('presence budget', () => {
 
   it('holds a burst under the limit, then delivers the latest state', () => {
     const sent: (string | null)[] = []
-    const gate = presenceGate({ send: (s) => sent.push(s), canSend: () => true })
+    const gate = new PresenceGate({ send: (s) => sent.push(s), canSend: () => true })
     for (let i = 0; i < 20; i++) gate.want(i % 2 ? '{"direct":true}' : null) // flicking between apps
     gate.want('{"direct":true}')
     expect(sent).toHaveLength(4) // the server allows 5 per 30 s
@@ -131,7 +139,7 @@ describe('presence budget', () => {
   it('never sends while it cannot, and starts afresh on a new channel', () => {
     let can = false
     const sent: (string | null)[] = []
-    const gate = presenceGate({ send: (s) => sent.push(s), canSend: () => can })
+    const gate = new PresenceGate({ send: (s) => sent.push(s), canSend: () => can })
     gate.want('{"direct":true}')
     expect(sent).toEqual([])
     can = true
@@ -245,8 +253,10 @@ describe('signalling for direct transfers', () => {
     channels[0].broadcast('signal', { s: await sealed(Date.now(), other) }) // not sealed with our key
     const good = await sealed(Date.now())
     const parts = good.split(':')
-    channels[0].broadcast('signal', { s: `${parts[0]}:${parts[1]}:A${parts[2].slice(1)}` }) // tampered
-    channels[0].broadcast('signal', { s: 'v1:' + 'A'.repeat(70_000) }) // oversized
+    const flipped = parts[2][0] === 'A' ? 'B' : 'A'
+    channels[0].broadcast('signal', { s: `${parts[0]}:${parts[1]}:${flipped}${parts[2].slice(1)}` }) // tampered
+    const huge = await encryptRecord(key, contexts.signal(S), { signal: offer, at: Date.now(), pad: 'x'.repeat(70_000) })
+    channels[0].broadcast('signal', { s: huge }) // sealed properly, but far too big to be a real signal
     channels[0].broadcast('signal', { s: { nested: 'object' } })
     state.key = null
     channels[0].broadcast('signal', { s: good }) // locked
@@ -267,7 +277,11 @@ describe('signalling for direct transfers', () => {
     await opts().sendSignal(signal)
     const s = channels[0].sent.find((m) => m.event === 'signal')?.payload.s as string
     expect(s).toMatch(/^v1:/)
-    expect(s).not.toContain('bye')
+    // Only the space's key opens it, and only as a signal for this space.
+    expect(await decryptRecord(key, contexts.signal(S), s)).toMatchObject({ signal })
+    const other = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
+    await expect(decryptRecord(other, contexts.signal(S), s)).rejects.toThrow()
+    await expect(decryptRecord(key, contexts.signal('another-space'), s)).rejects.toThrow()
     expect(opts().acceptFrom(YOU)).toBe(true)
     expect(opts().acceptFrom('stranger')).toBe(false)
   })

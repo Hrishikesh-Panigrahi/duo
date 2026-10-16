@@ -1,6 +1,4 @@
-// What the screens see: stored rows with their plaintext filled in from a
-// cache of what this device has decrypted. Plain functions, no React, so they
-// can be tested on their own.
+// What the screens see: stored rows with their plaintext filled in from what this device has decrypted.
 import {
   contexts,
   decryptMessage,
@@ -8,8 +6,8 @@ import {
   type MessageContent,
   type MessageIds,
 } from '../e2e'
-import type { Contact, List, ListItem, Member, Message, Note, Space, StoredMember, StoredSpace } from '../types'
-import { legacy, time, type Rows } from './rows'
+import type { Contact, List, ListItem, Member, Message, Note, Space, StoredMember, StoredMessage, StoredSpace } from '../types'
+import { legacy, type Rows } from './rows'
 
 /** Plaintext by context + ciphertext; FAILED marks something that wouldn't decrypt. */
 export type PlainCache = ReadonlyMap<string, unknown>
@@ -24,57 +22,46 @@ export type ViewInput = {
   plain: PlainCache
 }
 
-const byName = (a: Contact, b: Contact) => a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })
-const notesOrder = (a: Note, b: Note) => Number(b.pinned) - Number(a.pinned) || time(b.updated_at) - time(a.updated_at)
+const OWNED = ['id', 'space_id', 'created_by', 'created_at'] as const
 
-export function deriveView({ spaceId, rows, space: rawSpace, members: rawMembers, plain }: ViewInput) {
-  let decrypting = false
-  // Before encryption is on there's nothing to protect, so older rows show
-  // as they are (and the setup screen can offer the old names). Once it's on,
-  // a row without ciphertext can only have been written around the app, so
-  // it's never shown.
-  const encrypted = Boolean(rawSpace?.e2e_salt)
-  function read<T>(cipher: string | null | undefined, context: string, fallback: () => T): T | null {
-    if (!cipher) return encrypted ? null : fallback()
-    const v = plain.get(cacheKey(context, cipher))
-    if (v === undefined) {
-      decrypting = true
-      return null
-    }
-    return v === FAILED ? null : (v as T)
+export type SpaceView = {
+  contacts: Contact[]
+  notes: Note[]
+  lists: List[]
+  list_items: ListItem[]
+  messages: Message[]
+  space: Space | null
+  members: Member[]
+  /** Something has ciphertext this device hasn't decrypted yet. */
+  decrypting: boolean
+}
+
+class PlainReader {
+  decrypting = false
+
+  // Once encryption is on, a row without ciphertext can only have been written around the app.
+  constructor(
+    private readonly plain: PlainCache,
+    private readonly encrypted: boolean,
+  ) {}
+
+  read<T>(cipher: string | null | undefined, context: string, fallback: () => T): T | null {
+    if (!cipher) return this.encrypted ? null : fallback()
+    const v = this.plain.get(cacheKey(context, cipher))
+    if (v === undefined) this.decrypting = true
+    return v === undefined || v === FAILED ? null : (v as T)
   }
 
-  const contacts: Contact[] = rows.contacts
-    .flatMap((r) => {
-      const c = read(r.cipher, contexts.contact(spaceId, r.id), () => legacy.contact(r))
-      return c
-        ? [{ ...c, id: r.id, space_id: r.space_id, created_by: r.created_by, created_at: r.created_at, updated_at: r.updated_at }]
-        : []
+  /** Each readable row's content, plus the stored fields named in `keep`. */
+  rows<R extends { cipher: string | null }, C, K extends keyof R>(rows: R[], context: (r: R) => string, old: (r: R) => C, keep: readonly K[]) {
+    return rows.flatMap((r) => {
+      const content = this.read(r.cipher, context(r), () => old(r))
+      if (!content) return []
+      return [{ ...content, ...(Object.fromEntries(keep.map((k) => [k, r[k]])) as Pick<R, K>) }]
     })
-    .sort(byName)
+  }
 
-  const notes: Note[] = rows.notes
-    .flatMap((r) => {
-      const n = read(r.cipher, contexts.note(spaceId, r.id), () => legacy.note(r))
-      return n
-        ? [{ ...n, id: r.id, space_id: r.space_id, created_by: r.created_by, created_at: r.created_at, updated_at: r.updated_at }]
-        : []
-    })
-    .sort(notesOrder)
-
-  const lists: List[] = rows.lists.flatMap((r) => {
-    const l = read(r.cipher, contexts.list(spaceId, r.id), () => legacy.list(r))
-    return l ? [{ ...l, id: r.id, space_id: r.space_id, created_by: r.created_by, created_at: r.created_at }] : []
-  })
-
-  const list_items: ListItem[] = rows.list_items.flatMap((r) => {
-    const i = read(r.cipher, contexts.item(spaceId, r.list_id, r.id), () => legacy.item(r))
-    return i
-      ? [{ ...i, id: r.id, space_id: r.space_id, list_id: r.list_id, created_by: r.created_by, created_at: r.created_at }]
-      : []
-  })
-
-  const messages: Message[] = rows.messages.flatMap((r): Message[] | Message => {
+  message(r: StoredMessage, spaceId: string): Message | null {
     const base = {
       id: r.id,
       space_id: r.space_id,
@@ -85,27 +72,33 @@ export function deriveView({ spaceId, rows, space: rawSpace, members: rawMembers
       media_direct: r.media_direct ?? false,
       pending: r.pending,
     }
-    if (!r.cipher) return encrypted ? [] : { ...base, body: r.body ?? null, contact: r.contact ?? null, media: null }
-    const v = plain.get(cacheKey(contexts.message({ spaceId, senderId: r.sender_id, messageId: r.id }), r.cipher))
+    if (!r.cipher) return this.encrypted ? null : { ...base, body: r.body ?? null, contact: r.contact ?? null, media: null }
+    const v = this.plain.get(cacheKey(contexts.message({ spaceId, senderId: r.sender_id, messageId: r.id }), r.cipher))
     if (v === undefined) return { ...base, body: null, contact: null, media: null, locked: true }
     if (v === FAILED) return { ...base, body: null, contact: null, media: null, undecryptable: true }
     const content = v as MessageContent
     return { ...base, body: content.body, contact: content.contact, media: content.media ?? null }
-  })
-
-  const space: Space | null = rawSpace && {
-    ...rawSpace,
-    name: read(rawSpace.name_cipher, contexts.spaceName(spaceId), () => rawSpace.name),
   }
-  const members: Member[] = rawMembers.map((m) => ({
-    ...m,
-    display_name: read(m.display_name_cipher, contexts.memberName(spaceId, m.user_id), () => m.display_name),
-  }))
-
-  return { contacts, notes, lists, list_items, messages, space, members, decrypting }
 }
 
-export type SpaceView = ReturnType<typeof deriveView>
+export function deriveView({ spaceId, rows, space, members, plain }: ViewInput): SpaceView {
+  const reader = new PlainReader(plain, Boolean(space?.e2e_salt))
+  const contacts = reader.rows(rows.contacts, (r) => contexts.contact(spaceId, r.id), legacy.contact, [...OWNED, 'updated_at'])
+  const notes = reader.rows(rows.notes, (r) => contexts.note(spaceId, r.id), legacy.note, [...OWNED, 'updated_at'])
+  const view = {
+    contacts: contacts.sort((a, b) => a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })),
+    notes: notes.sort((a, b) => Number(b.pinned) - Number(a.pinned) || Date.parse(b.updated_at) - Date.parse(a.updated_at)),
+    lists: reader.rows(rows.lists, (r) => contexts.list(spaceId, r.id), legacy.list, OWNED),
+    list_items: reader.rows(rows.list_items, (r) => contexts.item(spaceId, r.list_id, r.id), legacy.item, [...OWNED, 'list_id']),
+    messages: rows.messages.flatMap((r) => reader.message(r, spaceId) ?? []),
+    space: space && { ...space, name: reader.read(space.name_cipher, contexts.spaceName(spaceId), () => space.name) },
+    members: members.map((m) => {
+      const display_name = reader.read(m.display_name_cipher, contexts.memberName(spaceId, m.user_id), () => m.display_name)
+      return { ...m, display_name }
+    }),
+  }
+  return { ...view, decrypting: reader.decrypting }
+}
 
 export type Decryption = { key: string; run: () => Promise<unknown> }
 
@@ -117,10 +110,8 @@ export function pendingDecryptions(
 ): Decryption[] {
   const jobs: Decryption[] = []
   const add = (context: string, cipher: string | null | undefined, run: (c: string) => Promise<unknown>) => {
-    if (!cipher) return
-    const k = cacheKey(context, cipher)
-    if (known(k)) return
-    jobs.push({ key: k, run: () => run(cipher) })
+    if (!cipher || known(cacheKey(context, cipher))) return
+    jobs.push({ key: cacheKey(context, cipher), run: () => run(cipher) })
   }
   const addRecord = (context: string, cipher: string | null | undefined) =>
     add(context, cipher, (c) => decryptRecord(key, context, c))

@@ -2,11 +2,8 @@
 import { useRef, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 
 /**
- * The menu opens while the finger is still down, so whatever the browser does
- * with that press next lands on the menu now under it: its own long-press
- * (selecting a word, a callout) or, when the finger lifts, a click on the
- * backdrop that would close the menu straight away. Hold all of that off
- * until just after the finger lifts.
+ * The menu opens under a finger that's still down, so the browser's own long-press (selecting a word)
+ * and the click from lifting the finger would land on the menu. Holds both off until just after.
  */
 function holdOffNativeLongPress() {
   const types = ['selectstart', 'contextmenu', 'click']
@@ -23,55 +20,73 @@ function holdOffNativeLongPress() {
     for (const type of types) document.removeEventListener(type, block, opts)
     window.getSelection()?.removeAllRanges()
   }
-  // The click from lifting the finger arrives right after it; a real tap on
-  // the menu comes much later than this.
+  // The click from lifting the finger arrives right after it; a real tap on the menu comes much later.
   const later = () => setTimeout(release, 400)
   for (const type of ['pointerup', 'pointercancel', 'touchend', 'touchcancel']) window.addEventListener(type, later, { once: true, capture: true })
   setTimeout(release, 3000) // in case the finger-up never arrives
 }
 
-/** Long-press on touch, right-click on desktop. */
-export function useLongPress(onLongPress: () => void, ms = 450) {
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const origin = useRef<{ x: number; y: number } | null>(null)
-  const fired = useRef(false)
-  const cancel = () => {
-    clearTimeout(timer.current)
-    origin.current = null
+class LongPress {
+  onLongPress = () => {}
+  private timer: ReturnType<typeof setTimeout> | undefined
+  private origin: { x: number; y: number } | null = null
+  private fired = false
+
+  constructor(private readonly ms: number) {}
+
+  readonly handlers = {
+    onPointerDown: (e: ReactPointerEvent) => this.press(e),
+    onPointerMove: (e: ReactPointerEvent) => this.move(e),
+    onPointerUp: () => this.cancel(),
+    onPointerLeave: () => this.cancel(),
+    onPointerCancel: () => this.cancel(),
+    onContextMenu: (e: ReactMouseEvent) => this.rightClick(e),
+    // A long-press shouldn't also follow a link inside the bubble.
+    onClickCapture: (e: ReactMouseEvent) => this.swallowClickAfterPress(e),
   }
-  const fire = (byTouch: boolean) => {
-    if (fired.current) return
-    fired.current = true
+
+  private press(e: ReactPointerEvent) {
+    if (e.button !== 0) return
+    this.fired = false
+    this.origin = { x: e.clientX, y: e.clientY }
+    const byTouch = e.pointerType !== 'mouse'
+    this.timer = setTimeout(() => this.fire(byTouch), this.ms)
+  }
+
+  private move(e: ReactPointerEvent) {
+    if (this.origin && Math.hypot(e.clientX - this.origin.x, e.clientY - this.origin.y) > 10) this.cancel()
+  }
+
+  private rightClick(e: ReactMouseEvent) {
+    e.preventDefault()
+    this.cancel()
+    this.fire(false)
+  }
+
+  private swallowClickAfterPress(e: ReactMouseEvent) {
+    if (!this.fired) return
+    e.preventDefault()
+    e.stopPropagation()
+    this.fired = false
+  }
+
+  private cancel() {
+    clearTimeout(this.timer)
+    this.origin = null
+  }
+
+  private fire(byTouch: boolean) {
+    if (this.fired) return
+    this.fired = true
     navigator.vibrate?.(10)
     if (byTouch) holdOffNativeLongPress()
-    onLongPress()
+    this.onLongPress()
   }
-  return {
-    onPointerDown: (e: ReactPointerEvent) => {
-      if (e.button !== 0) return
-      fired.current = false
-      origin.current = { x: e.clientX, y: e.clientY }
-      const byTouch = e.pointerType !== 'mouse'
-      timer.current = setTimeout(() => fire(byTouch), ms)
-    },
-    onPointerMove: (e: ReactPointerEvent) => {
-      if (origin.current && Math.hypot(e.clientX - origin.current.x, e.clientY - origin.current.y) > 10) cancel()
-    },
-    onPointerUp: cancel,
-    onPointerLeave: cancel,
-    onPointerCancel: cancel,
-    onContextMenu: (e: ReactMouseEvent) => {
-      e.preventDefault()
-      cancel()
-      fire(false)
-    },
-    // A long-press shouldn't also follow a link inside the bubble.
-    onClickCapture: (e: ReactMouseEvent) => {
-      if (fired.current) {
-        e.preventDefault()
-        e.stopPropagation()
-        fired.current = false
-      }
-    },
-  }
+}
+
+export function useLongPress(onLongPress: () => void, ms = 450) {
+  const press = useRef<LongPress | null>(null)
+  press.current ??= new LongPress(ms)
+  press.current.onLongPress = onLongPress
+  return press.current.handlers
 }

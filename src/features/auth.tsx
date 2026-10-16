@@ -2,7 +2,9 @@ import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
 import { pendingInvite } from '../lib/invite'
-import { Button, Field, Input, errorMessage, toast } from '../components/ui'
+import { signOut } from '../lib/session'
+import { Button, Field, Input, toast } from '../components/ui'
+import { useBusy } from '../components/use-busy'
 
 /** undefined while restoring the saved session, null when signed out. */
 export function useAuth() {
@@ -33,53 +35,59 @@ export function AuthLayout({ children, subtitle }: { children: ReactNode; subtit
   )
 }
 
-export function AuthScreen() {
-  const [invited] = useState(() => pendingInvite.get() !== null)
-  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>(invited ? 'signup' : 'signin')
+export function SignOutLink() {
+  return (
+    <button className="mx-auto mt-6 block text-sm text-muted" onClick={() => signOut()}>
+      Sign out
+    </button>
+  )
+}
+
+type Mode = 'signin' | 'signup' | 'forgot'
+
+/** Does what the form is for. Returns a notice to show (then it's back to signing in), or null. */
+async function submitAuth(mode: Mode, email: string, password: string): Promise<string | null> {
+  if (mode === 'signin') {
+    const { error } = await supabase.auth.signInWithPassword({ email, password })
+    if (error) throw error
+    return null
+  }
+  if (mode === 'forgot') {
+    const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: location.origin })
+    if (error) throw error
+    return 'If that email has an account, a reset link is on its way.'
+  }
+  const { data, error } = await supabase.auth.signUp({ email, password, options: { emailRedirectTo: location.origin } })
+  if (error) throw error
+  return data.session ? null : 'Check your inbox and tap the confirmation link, then sign in here.'
+}
+
+function useAuthForm(initial: Mode) {
+  const [mode, setMode] = useState<Mode>(initial)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-
-  async function submit(e: FormEvent) {
+  const { busy, error, setError, run } = useBusy()
+  function submit(e: FormEvent) {
     e.preventDefault()
-    setBusy(true)
-    setError(null)
     setNotice(null)
-    try {
-      if (mode === 'signup') {
-        const { data, error } = await supabase.auth.signUp({
-          email,
-          password,
-          options: { emailRedirectTo: location.origin },
-        })
-        if (error) throw error
-        if (!data.session) {
-          setNotice('Check your inbox and tap the confirmation link, then sign in here.')
-          setMode('signin')
-        }
-      } else if (mode === 'signin') {
-        const { error } = await supabase.auth.signInWithPassword({ email, password })
-        if (error) throw error
-      } else {
-        const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: location.origin })
-        if (error) throw error
-        setNotice('If that email has an account, a reset link is on its way.')
-        setMode('signin')
-      }
-    } catch (err) {
-      setError(errorMessage(err))
-    } finally {
-      setBusy(false)
-    }
+    void run(async () => {
+      const said = await submitAuth(mode, email, password)
+      if (!said) return
+      setNotice(said)
+      setMode('signin')
+    }, { settle: true })
   }
-
-  const switchTo = (m: typeof mode) => {
+  function switchTo(m: Mode) {
     setMode(m)
     setError(null)
   }
+  return { mode, email, setEmail, password, setPassword, notice, busy, error, submit, switchTo }
+}
 
+export function AuthScreen() {
+  const [invited] = useState(() => pendingInvite.get() !== null)
+  const form = useAuthForm(invited ? 'signup' : 'signin')
   return (
     <AuthLayout subtitle={invited ? "You've been invited to a space." : undefined}>
       {invited && (
@@ -87,75 +95,79 @@ export function AuthScreen() {
           Create an account (or sign in) and you'll join it straight away. You'll need the passphrase your person tells you.
         </p>
       )}
-      <form onSubmit={submit} className="space-y-4">
+      <form onSubmit={form.submit} className="space-y-4">
         <Field label="Email">
-          <Input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
+          <Input type="email" autoComplete="email" required value={form.email} onChange={(e) => form.setEmail(e.target.value)} />
         </Field>
-        {mode !== 'forgot' && (
-          <Field label="Password" hint={mode === 'signup' ? 'At least 6 characters.' : undefined}>
-            <Input
-              type="password"
-              autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
-              required
-              minLength={6}
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-            />
-          </Field>
-        )}
-        {error && <p className="text-sm text-danger">{error}</p>}
-        {notice && <p className="rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm">{notice}</p>}
-        <Button type="submit" loading={busy} className="w-full">
-          {mode === 'signin' ? 'Sign in' : mode === 'signup' ? 'Create account' : 'Send reset link'}
+        {form.mode !== 'forgot' && <PasswordField mode={form.mode} value={form.password} onChange={form.setPassword} />}
+        {form.error && <p className="text-sm text-danger">{form.error}</p>}
+        {form.notice && <p className="rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm">{form.notice}</p>}
+        <Button type="submit" loading={form.busy} className="w-full">
+          {form.mode === 'signin' ? 'Sign in' : form.mode === 'signup' ? 'Create account' : 'Send reset link'}
         </Button>
       </form>
-      <div className="mt-6 flex flex-col items-center gap-2 text-sm">
-        {mode === 'signin' ? (
-          <>
-            <button className="font-medium text-accent" onClick={() => switchTo('signup')}>
-              New here? Create an account
-            </button>
-            <button className="text-muted" onClick={() => switchTo('forgot')}>
-              Forgot password?
-            </button>
-          </>
-        ) : (
-          <button className="font-medium text-accent" onClick={() => switchTo('signin')}>
-            Back to sign in
-          </button>
-        )}
-      </div>
+      <ModeLinks mode={form.mode} onSwitch={form.switchTo} />
     </AuthLayout>
+  )
+}
+
+function PasswordField({ mode, value, onChange }: { mode: Mode; value: string; onChange: (password: string) => void }) {
+  return (
+    <Field label="Password" hint={mode === 'signup' ? 'At least 6 characters.' : undefined}>
+      <Input
+        type="password"
+        autoComplete={mode === 'signup' ? 'new-password' : 'current-password'}
+        required
+        minLength={6}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+    </Field>
+  )
+}
+
+function ModeLinks({ mode, onSwitch }: { mode: Mode; onSwitch: (m: Mode) => void }) {
+  if (mode !== 'signin') {
+    return (
+      <div className="mt-6 flex flex-col items-center gap-2 text-sm">
+        <button className="font-medium text-accent" onClick={() => onSwitch('signin')}>
+          Back to sign in
+        </button>
+      </div>
+    )
+  }
+  return (
+    <div className="mt-6 flex flex-col items-center gap-2 text-sm">
+      <button className="font-medium text-accent" onClick={() => onSwitch('signup')}>
+        New here? Create an account
+      </button>
+      <button className="text-muted" onClick={() => onSwitch('forgot')}>
+        Forgot password?
+      </button>
+    </div>
   )
 }
 
 export function NewPasswordScreen({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  async function submit(e: FormEvent) {
-    e.preventDefault()
-    setBusy(true)
+  const { busy, error, run } = useBusy()
+  async function save() {
     const { error } = await supabase.auth.updateUser({ password })
-    setBusy(false)
-    if (error) return setError(errorMessage(error))
+    if (error) throw error
     toast('Password updated')
     onDone()
   }
-
   return (
     <AuthLayout subtitle="Choose a new password.">
-      <form onSubmit={submit} className="space-y-4">
+      <form
+        onSubmit={(e) => {
+          e.preventDefault()
+          void run(save, { settle: true })
+        }}
+        className="space-y-4"
+      >
         <Field label="New password">
-          <Input
-            type="password"
-            autoComplete="new-password"
-            required
-            minLength={6}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
+          <Input type="password" autoComplete="new-password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>
         {error && <p className="text-sm text-danger">{error}</p>}
         <Button type="submit" loading={busy} className="w-full">

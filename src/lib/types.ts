@@ -1,9 +1,7 @@
 import type { ContactCard } from './vcard'
 
-// Two layers: what's stored (ciphertext plus a little metadata the server
-// needs, like ids and timestamps) and what the app works with once a row is
-// decrypted on the phone. Rows from before encryption still carry their
-// plaintext columns until the app upgrades them.
+// What's stored (ciphertext plus the ids and timestamps the server needs), and what the app works with
+// once a row is decrypted on the phone.
 
 // ─── What's inside each ciphertext ─────────────────────────────────────
 

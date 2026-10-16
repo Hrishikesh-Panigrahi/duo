@@ -26,44 +26,12 @@ function Root() {
 }
 
 function SpaceGate({ user }: { user: User }) {
-  const [spaceId, setSpaceId] = useState<string | null | undefined>(undefined)
-  const [error, setError] = useState<string | null>(null)
-  const [attempt, setAttempt] = useState(0)
-
-  useEffect(() => {
-    let alive = true
-    supabase
-      .from('members')
-      .select('space_id')
-      .eq('user_id', user.id)
-      .maybeSingle()
-      .then(({ data, error }) => {
-        if (!alive) return
-        if (error) return setError(errorMessage(serverError(error)))
-        // Each account belongs to one space, so an invite opened after
-        // joining one has nothing to do.
-        if (data?.space_id && pendingInvite.get()) {
-          pendingInvite.clear()
-          toast("You're already in a space, so that invite wasn't used")
-        }
-        setSpaceId(data?.space_id ?? null)
-      })
-    return () => {
-      alive = false
-    }
-  }, [user.id, attempt])
-
+  const { spaceId, setSpaceId, error, retry } = useMySpace(user.id)
   if (error) {
     return (
       <AuthLayout subtitle="Couldn't reach the server.">
         <p className="mb-6 text-center text-sm text-muted">{error}</p>
-        <Button
-          className="w-full"
-          onClick={() => {
-            setError(null)
-            setAttempt((n) => n + 1)
-          }}
-        >
+        <Button className="w-full" onClick={retry}>
           Try again
         </Button>
       </AuthLayout>
@@ -76,6 +44,35 @@ function SpaceGate({ user }: { user: User }) {
       <Shell />
     </SpaceProvider>
   )
+}
+
+/** The space this account belongs to: undefined while loading, null if none yet. */
+function useMySpace(userId: string) {
+  const [spaceId, setSpaceId] = useState<string | null | undefined>(undefined)
+  const [error, setError] = useState<string | null>(null)
+  const [attempt, setAttempt] = useState(0)
+  useEffect(() => {
+    let alive = true
+    const query = supabase.from('members').select('space_id').eq('user_id', userId).maybeSingle()
+    query.then(({ data, error }) => {
+      if (!alive) return
+      if (error) return setError(errorMessage(serverError(error)))
+      // Each account belongs to one space, so an invite opened after joining one has nothing to do.
+      if (data?.space_id && pendingInvite.get()) {
+        pendingInvite.clear()
+        toast("You're already in a space, so that invite wasn't used")
+      }
+      setSpaceId(data?.space_id ?? null)
+    })
+    return () => {
+      alive = false
+    }
+  }, [userId, attempt])
+  const retry = () => {
+    setError(null)
+    setAttempt((n) => n + 1)
+  }
+  return { spaceId, setSpaceId, error, retry }
 }
 
 function NotConfigured() {

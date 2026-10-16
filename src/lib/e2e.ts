@@ -1,9 +1,5 @@
-// End-to-end encryption for chat messages.
-//
-// Both people type the same passphrase on each of their devices. PBKDF2 turns
-// it into an AES-256-GCM key that stays on the device; the server only ever
-// sees ciphertext and a random salt. Each message's ciphertext is bound to its
-// space, sender and id, so someone with database access can't move or replay it.
+// End-to-end encryption. Both people type the same passphrase; PBKDF2 turns it into an AES-256-GCM key
+// that never leaves the device, so the server only ever sees ciphertext and a random salt.
 import type { ContactCard } from './vcard'
 import type { MediaInfo } from './types'
 
@@ -60,14 +56,12 @@ async function open(key: CryptoKey, sealed: string, context: string): Promise<st
   return fromUtf8.decode(pt)
 }
 
-const checkContext = (spaceId: string) => `duo:check:${spaceId}`
-
-export const makeCheck = (key: CryptoKey, spaceId: string) => seal(key, CHECK_PLAINTEXT, checkContext(spaceId))
+export const makeCheck = (key: CryptoKey, spaceId: string) => seal(key, CHECK_PLAINTEXT, contexts.check(spaceId))
 
 /** True if this key was derived from the space's passphrase. */
 export async function keyMatches(key: CryptoKey, spaceId: string, check: string): Promise<boolean> {
   try {
-    return (await open(key, check, checkContext(spaceId))) === CHECK_PLAINTEXT
+    return (await open(key, check, contexts.check(spaceId))) === CHECK_PLAINTEXT
   } catch {
     return false
   }
@@ -76,10 +70,7 @@ export async function keyMatches(key: CryptoKey, spaceId: string, check: string)
 export type MessageIds = { spaceId: string; senderId: string; messageId: string }
 export type MessageContent = { body: string | null; contact: ContactCard | null; media?: MediaInfo | null }
 
-/**
- * Every ciphertext is sealed to what it is and where it belongs, so a valid
- * ciphertext copied into another row, list, space or field won't decrypt.
- */
+/** Each ciphertext is sealed to what and where it is, so one copied into another row or field won't decrypt. */
 export const contexts = {
   message: ({ spaceId, senderId, messageId }: MessageIds) => `duo:msg:${spaceId}:${senderId}:${messageId}`,
   media: ({ spaceId, senderId, messageId }: MessageIds) => `duo:media:${spaceId}:${senderId}:${messageId}`,
@@ -91,6 +82,8 @@ export const contexts = {
   memberName: (spaceId: string, userId: string) => `duo:member-name:${spaceId}:${userId}`,
   /** Messages that set up a direct phone-to-phone connection. */
   signal: (spaceId: string) => `duo:signal:${spaceId}`,
+  /** Proves a key was derived from the space's passphrase. */
+  check: (spaceId: string) => `duo:check:${spaceId}`,
 }
 
 export function encryptMessage(key: CryptoKey, ids: MessageIds, content: MessageContent): Promise<string> {

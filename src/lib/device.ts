@@ -1,10 +1,6 @@
 import { useEffect, useReducer, useState } from 'react'
 
-/**
- * Keeps --app-h equal to the visible height. On iOS the keyboard shrinks the
- * visual viewport but not the layout, so without this the chat composer hides
- * behind the keyboard.
- */
+/** Keeps --app-h equal to the visible height: on iOS the keyboard shrinks only the visual viewport. */
 export function trackViewportHeight() {
   const vv = window.visualViewport
   if (!vv) return
@@ -34,44 +30,42 @@ function isTextEntry(el: Element | null) {
   return (el as HTMLElement).isContentEditable === true
 }
 
-/**
- * True while an on-screen keyboard is actually covering the bottom of the
- * screen. Focus alone isn't enough: desktops, tablets with a hardware keyboard
- * and emulators focus fields without any keyboard appearing.
- */
+/** True while an on-screen keyboard covers the screen. Focus alone isn't enough: desktops focus fields too. */
 export function useKeyboardOpen() {
   const [open, setOpen] = useState(false)
   useEffect(() => {
     const vv = window.visualViewport
-    if (!vv) return
-    // Tallest the visible area has been at this width. Rotating changes the
-    // width; the keyboard and the browser's address bar don't.
-    let width = window.innerWidth
-    let tallest = 0
-    const update = () => {
-      if (window.innerWidth !== width) {
-        width = window.innerWidth
-        tallest = 0
-      }
-      const height = vv.height * vv.scale // ignore pinch-zoom
-      tallest = Math.max(tallest, height)
-      // Keyboards take well over a quarter of the screen; the address bar
-      // collapsing or expanding takes far less.
-      setOpen(isTextEntry(document.activeElement) && height < tallest * 0.75)
-    }
-    // focusout fires before focus lands on the next field; wait a tick.
-    const onFocus = () => setTimeout(update, 0)
-    vv.addEventListener('resize', update)
-    document.addEventListener('focusin', onFocus)
-    document.addEventListener('focusout', onFocus)
-    update()
-    return () => {
-      vv.removeEventListener('resize', update)
-      document.removeEventListener('focusin', onFocus)
-      document.removeEventListener('focusout', onFocus)
-    }
+    return vv ? watchKeyboard(vv, setOpen) : undefined
   }, [])
   return open
+}
+
+/** Returns a function that stops watching. */
+function watchKeyboard(vv: VisualViewport, onChange: (open: boolean) => void): () => void {
+  // The tallest the visible area has been at this width: rotating changes the width, a keyboard doesn't.
+  let width = window.innerWidth
+  let tallest = 0
+  const update = () => {
+    if (window.innerWidth !== width) {
+      width = window.innerWidth
+      tallest = 0
+    }
+    const height = vv.height * vv.scale // ignore pinch-zoom
+    tallest = Math.max(tallest, height)
+    // Keyboards take well over a quarter of the screen; the address bar collapsing takes far less.
+    onChange(isTextEntry(document.activeElement) && height < tallest * 0.75)
+  }
+  // focusout fires before focus lands on the next field; wait a tick.
+  const onFocus = () => setTimeout(update, 0)
+  vv.addEventListener('resize', update)
+  document.addEventListener('focusin', onFocus)
+  document.addEventListener('focusout', onFocus)
+  update()
+  return () => {
+    vv.removeEventListener('resize', update)
+    document.removeEventListener('focusin', onFocus)
+    document.removeEventListener('focusout', onFocus)
+  }
 }
 
 export function useDocumentVisible() {
@@ -84,8 +78,7 @@ export function useDocumentVisible() {
   return visible
 }
 
-// Chrome/Edge/Android fire this when the app is installable. It has to be
-// caught early, before React mounts, so it's registered at import time.
+// Chrome, Edge and Android fire this once, possibly before React mounts, so it's caught at import time.
 let installEvent: BeforeInstallPromptEvent | null = null
 const installSubs = new Set<() => void>()
 window.addEventListener('beforeinstallprompt', (e) => {

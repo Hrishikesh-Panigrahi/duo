@@ -3,17 +3,11 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import { VitePWA } from 'vite-plugin-pwa'
 
-/**
- * Browser-enforced rules for the deployed app. The content security policy
- * only lets the page run its own scripts and talk to its own Supabase project,
- * so even if something slipped past React's escaping, injected code couldn't
- * run or send your data anywhere else. The rest stop other sites framing the
- * app, sniffing file types, or seeing where you came from.
- */
-function securityHeaders(supabaseUrl: string): Record<string, string> {
+/** Lets the page run only its own scripts and talk only to its own Supabase project. */
+function contentSecurityPolicy(supabaseUrl: string): string {
   const api = new URL(supabaseUrl)
   const socket = `${api.protocol === 'https:' ? 'wss' : 'ws'}://${api.host}`
-  const csp = [
+  return [
     "default-src 'none'",
     "script-src 'self'",
     "style-src 'self'",
@@ -29,8 +23,12 @@ function securityHeaders(supabaseUrl: string): Record<string, string> {
     "frame-ancestors 'none'",
     "object-src 'none'",
   ].join('; ')
+}
+
+/** The policy, plus headers that stop other sites framing the app, sniffing file types, or seeing where you came from. */
+function securityHeaders(supabaseUrl: string): Record<string, string> {
   return {
-    'Content-Security-Policy': csp,
+    'Content-Security-Policy': contentSecurityPolicy(supabaseUrl),
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
     'Referrer-Policy': 'no-referrer',
@@ -54,42 +52,40 @@ function cloudflareHeaders(headers: Record<string, string>): Plugin {
   }
 }
 
+function installable() {
+  return VitePWA({
+    registerType: 'autoUpdate',
+    includeAssets: ['favicon.ico', 'logo.svg', 'apple-touch-icon-180x180.png'],
+    manifest: {
+      name: 'Duo',
+      short_name: 'Duo',
+      description: 'Shared contacts, chat, lists and notes for the two of you.',
+      theme_color: '#faf6f3',
+      background_color: '#faf6f3',
+      display: 'standalone',
+      start_url: '/',
+      icons: [
+        { src: 'pwa-64x64.png', sizes: '64x64', type: 'image/png' },
+        { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
+        { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
+        { src: 'maskable-icon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      ],
+    },
+    workbox: {
+      navigateFallback: '/index.html',
+      globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
+    },
+  })
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), 'VITE_')
   const headers = securityHeaders(env.VITE_SUPABASE_URL || 'http://localhost')
-
   return {
     // Never ship source maps: no readable copy of the code next to the app.
     build: { sourcemap: false },
     // `npm run preview` serves the build with the same headers, to test them locally.
     preview: { headers },
-    plugins: [
-      react(),
-      tailwindcss(),
-      cloudflareHeaders(headers),
-      VitePWA({
-        registerType: 'autoUpdate',
-        includeAssets: ['favicon.ico', 'logo.svg', 'apple-touch-icon-180x180.png'],
-        manifest: {
-          name: 'Duo',
-          short_name: 'Duo',
-          description: 'Shared contacts, chat, lists and notes for the two of you.',
-          theme_color: '#faf6f3',
-          background_color: '#faf6f3',
-          display: 'standalone',
-          start_url: '/',
-          icons: [
-            { src: 'pwa-64x64.png', sizes: '64x64', type: 'image/png' },
-            { src: 'pwa-192x192.png', sizes: '192x192', type: 'image/png' },
-            { src: 'pwa-512x512.png', sizes: '512x512', type: 'image/png' },
-            { src: 'maskable-icon-512x512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
-          ],
-        },
-        workbox: {
-          navigateFallback: '/index.html',
-          globPatterns: ['**/*.{js,css,html,svg,png,ico,webmanifest}'],
-        },
-      }),
-    ],
+    plugins: [react(), tailwindcss(), cloudflareHeaders(headers), installable()],
   }
 })
