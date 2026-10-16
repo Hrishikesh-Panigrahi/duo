@@ -1,75 +1,98 @@
 import type { ContactCard } from './vcard'
 
-export type Space = {
-  id: string
-  name: string
-  invite_code: string | null
-  created_at: string
-  /** Set once end-to-end encryption is turned on for the space. */
-  e2e_salt: string | null
-  e2e_check: string | null
+// Two layers: what's stored (ciphertext plus a little metadata the server
+// needs, like ids and timestamps) and what the app works with once a row is
+// decrypted on the phone. Rows from before encryption still carry their
+// plaintext columns until the app upgrades them.
+
+// ─── What's inside each ciphertext ─────────────────────────────────────
+
+export type ContactContent = Required<ContactCard> & { tags: string[]; favorite: boolean }
+export type NoteContent = { title: string; body: string; pinned: boolean }
+export type ListContent = { title: string; emoji: string | null }
+export type ItemContent = { text: string; done: boolean; due_date: string | null }
+
+export type MediaInfo = {
+  kind: 'image' | 'video'
+  mime: string
+  /** Bytes, before encryption. */
+  size: number
+  width?: number
+  height?: number
 }
 
-export type Member = { space_id: string; user_id: string; display_name: string; joined_at: string }
+// ─── Stored rows ───────────────────────────────────────────────────────
 
-export type Contact = Required<ContactCard> & {
+type Stored = { id: string; space_id: string; cipher: string | null; created_at: string }
+
+export type StoredSpace = {
+  id: string
+  invite_code: string | null
+  created_at: string
+  e2e_salt: string | null
+  e2e_check: string | null
+  name_cipher: string | null
+  /** Plaintext from before encryption. */
+  name: string | null
+}
+
+export type StoredMember = {
+  space_id: string
+  user_id: string
+  joined_at: string
+  display_name_cipher: string | null
+  /** Plaintext from before encryption. */
+  display_name: string | null
+}
+
+export type StoredContact = Stored & Partial<ContactContent> & { created_by: string | null; updated_at: string }
+export type StoredNote = Stored & Partial<NoteContent> & { created_by: string | null; updated_at: string }
+export type StoredList = Stored & Partial<ListContent> & { created_by: string | null }
+export type StoredItem = Stored & Partial<ItemContent> & { list_id: string; created_by: string | null }
+export type StoredMessage = Stored & {
+  sender_id: string
+  /** Plaintext from before encryption. */
+  body?: string | null
+  contact?: ContactCard | null
+  has_media?: boolean
+  media_opened_at?: string | null
+  /** Client-only: shown before the server confirms. */
+  pending?: boolean
+}
+
+// ─── What the app works with ───────────────────────────────────────────
+
+export type Space = Omit<StoredSpace, 'name'> & { name: string | null }
+export type Member = Omit<StoredMember, 'display_name'> & { display_name: string | null }
+
+export type Contact = ContactContent & {
   id: string
   space_id: string
-  tags: string[]
-  favorite: boolean
   created_by: string | null
   created_at: string
   updated_at: string
 }
+export type ContactInput = ContactContent
 
-export type ContactInput = Omit<Contact, 'id' | 'space_id' | 'created_by' | 'created_at' | 'updated_at'>
+export type Note = NoteContent & { id: string; space_id: string; created_by: string | null; created_at: string; updated_at: string }
+export type List = ListContent & { id: string; space_id: string; created_by: string | null; created_at: string }
+export type ListItem = ItemContent & { id: string; space_id: string; list_id: string; created_by: string | null; created_at: string }
 
 export type Message = {
   id: string
   space_id: string
   sender_id: string
+  created_at: string
   body: string | null
   contact: ContactCard | null
-  /** End-to-end encrypted body and contact; the server never sees them in the clear. */
-  cipher?: string | null
-  created_at: string
-  /** Client-only: shown before the server confirms. */
+  media: MediaInfo | null
+  has_media: boolean
+  media_opened_at: string | null
   pending?: boolean
-  /** Client-only: encrypted, and this device can't read it yet (no key, or still decrypting). */
+  /** Encrypted, and this device can't read it yet. */
   locked?: boolean
-  /** Client-only: encrypted, and decrypting it failed. */
+  /** Encrypted, and decrypting it failed. */
   undecryptable?: boolean
-}
-
-export type Note = {
-  id: string
-  space_id: string
-  title: string
-  body: string
-  pinned: boolean
-  created_by: string | null
-  created_at: string
-  updated_at: string
-}
-
-export type List = {
-  id: string
-  space_id: string
-  title: string
-  emoji: string | null
-  created_by: string | null
-  created_at: string
-}
-
-export type ListItem = {
-  id: string
-  space_id: string
-  list_id: string
-  text: string
-  done: boolean
-  due_date: string | null
-  created_by: string | null
-  created_at: string
 }
 
 /** Just the card fields, with every optional field filled in. */

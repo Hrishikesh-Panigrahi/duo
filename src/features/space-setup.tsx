@@ -45,42 +45,22 @@ export function InviteCode({ code }: { code: string }) {
 /** First run after signing in: start a space, or join your person's with their code. */
 export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceId: string) => void }) {
   const [mode, setMode] = useState<'create' | 'join'>('create')
-  const [name, setName] = useState('')
-  const [spaceName, setSpaceName] = useState('')
   const [code, setCode] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [created, setCreated] = useState<{ id: string; code: string } | null>(null)
 
   async function submit(e: FormEvent) {
     e.preventDefault()
     setBusy(true)
     setError(null)
     try {
-      if (mode === 'create') {
-        const id = await must<string>(supabase.rpc('create_space', { space_name: spaceName, my_name: name }))
-        const space = await must<{ invite_code: string }>(supabase.from('spaces').select('invite_code').eq('id', id).single())
-        setCreated({ id, code: space.invite_code })
-      } else {
-        onReady(await must<string>(supabase.rpc('join_space', { code, my_name: name })))
-      }
+      // Names are asked for after the passphrase, so they can be encrypted.
+      onReady(await must<string>(mode === 'create' ? supabase.rpc('create_space') : supabase.rpc('join_space', { code })))
     } catch (err) {
       setError(errorMessage(err))
     } finally {
       setBusy(false)
     }
-  }
-
-  if (created) {
-    return (
-      <AuthLayout subtitle="Your space is ready.">
-        <p className="mb-4 text-center">Send this code to your person. Once they join, it stops working, so it's just the two of you.</p>
-        <InviteCode code={created.code} />
-        <Button className="mt-6 w-full" onClick={() => onReady(created.id)}>
-          Continue
-        </Button>
-      </AuthLayout>
-    )
   }
 
   return (
@@ -103,11 +83,11 @@ export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceI
       </div>
       <form onSubmit={submit} className="space-y-4">
         {mode === 'create' ? (
-          <Field label="Name this space" hint="You can change it later.">
-            <Input placeholder="e.g. Asha & Rohan" maxLength={60} value={spaceName} onChange={(e) => setSpaceName(e.target.value)} />
-          </Field>
+          <p className="text-sm text-muted">
+            You'll pick a passphrase next, then get an invite code to send your person. Only the two of you can ever join.
+          </p>
         ) : (
-          <Field label="Invite code">
+          <Field label="Invite code" hint="You'll need the passphrase you two agreed on next.">
             <Input
               required
               autoCapitalize="characters"
@@ -119,9 +99,6 @@ export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceI
             />
           </Field>
         )}
-        <Field label="Your name" hint="What your person sees.">
-          <Input required maxLength={40} autoComplete="given-name" value={name} onChange={(e) => setName(e.target.value)} />
-        </Field>
         {error && <p className="text-sm text-danger">{error}</p>}
         <Button type="submit" loading={busy} className="w-full">
           {mode === 'create' ? 'Create space' : 'Join'}

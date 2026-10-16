@@ -8,17 +8,17 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { ArrowUp, ContactRound, Copy, Download, Lock, MessageCircleHeart, NotebookPen, Plus, Trash } from 'lucide-react'
+import { ArrowUp, ContactRound, Copy, Download, Film, Image, ImagePlus, Lock, MessageCircleHeart, NotebookPen, Plus, Trash, X } from 'lucide-react'
 import { time, useSpace } from '../lib/store'
 import { toCard, type Contact, type Message } from '../lib/types'
 import { downloadVCard, type ContactCard } from '../lib/vcard'
 import { todayYMD } from '../lib/dates'
 import { isTouch } from '../lib/device'
-import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, cx, toast, toastError } from '../components/ui'
+import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, Spinner, cx, errorMessage, toast, toastError } from '../components/ui'
+import { MAX_MEDIA_BYTES, MEDIA_TTL_DAYS, checkSize, isExpired } from '../lib/media'
 import { ContactPicker, findExisting } from './contacts'
 import { InviteCode } from './space-setup'
 import { useNav } from './nav'
-import { EncryptionPanel } from './encryption'
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
@@ -37,11 +37,13 @@ function dayLabel(iso: string) {
 const GROUP_GAP_MS = 3 * 60_000
 
 export function ChatTab({ active }: { active: boolean }) {
-  const { messages, userId, partner, space, actions, e2e } = useSpace()
+  const { messages, userId, partner, space, actions } = useSpace()
   const scroller = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const [menuFor, setMenuFor] = useState<Message | null>(null)
   const [picking, setPicking] = useState(false)
+  const [mediaToSend, setMediaToSend] = useState<File | null>(null)
+  const [viewing, setViewing] = useState<Message | null>(null)
 
   const scrollToEnd = () => {
     const el = scroller.current
@@ -82,15 +84,15 @@ export function ChatTab({ active }: { active: boolean }) {
             <InviteCode code={space.invite_code} />
           </div>
         )}
-        {e2e.enabled && messages.length > 0 && (
+        {messages.length > 0 && (
           <div className="mt-2 mb-1 flex items-center justify-center gap-1 text-xs text-muted">
             <Lock className="size-3" /> End-to-end encrypted
           </div>
         )}
         {messages.length === 0 ? (
           <EmptyState icon={<MessageCircleHeart />} title="Just the two of you">
-            {e2e.enabled ? 'End-to-end encrypted: only your two phones can read these messages.' : 'Only you and ' + (partner?.display_name ?? 'your person') + ' can see this chat.'}{' '}
-            Tap <ContactRound className="inline size-4 align-text-bottom" /> to send a contact.
+            End-to-end encrypted: only your two phones can read this chat. Tap{' '}
+            <Image className="inline size-4 align-text-bottom" /> for a view-once photo or video.
           </EmptyState>
         ) : (
           messages.map((m, i) => {
@@ -103,20 +105,32 @@ export function ChatTab({ active }: { active: boolean }) {
                 {newDay && (
                   <div className="my-4 text-center text-xs font-medium text-muted">{dayLabel(m.created_at)}</div>
                 )}
-                <Bubble message={m} mine={m.sender_id === userId} grouped={grouped} onMenu={setMenuFor} />
+                <Bubble message={m} mine={m.sender_id === userId} grouped={grouped} onMenu={setMenuFor} onOpenMedia={setViewing} />
               </Fragment>
             )
           })
         )}
       </div>
 
-      {!e2e.ready ? null : e2e.enabled && e2e.unlocked ? (
-        <Composer onSend={(body) => send({ body })} onAttach={() => setPicking(true)} onTyping={actions.typing} />
-      ) : (
-        <EncryptionPanel />
-      )}
+      <Composer
+        onSend={(body) => send({ body })}
+        onAttach={() => setPicking(true)}
+        onPickMedia={setMediaToSend}
+        onTyping={actions.typing}
+      />
 
       <MessageMenu message={menuFor} mine={menuFor?.sender_id === userId} onClose={() => setMenuFor(null)} />
+
+      <MediaSendSheet
+        file={mediaToSend}
+        onClose={() => setMediaToSend(null)}
+        onSend={(file) => {
+          atBottom.current = true
+          setMediaToSend(null)
+          actions.sendMedia(file).catch(toastError)
+        }}
+      />
+      <MediaViewer message={viewing} onClose={() => setViewing(null)} />
 
       <Sheet open={picking} onClose={() => setPicking(false)} title="Send a contact">
         <ContactPicker
@@ -195,11 +209,13 @@ function Bubble({
   mine,
   grouped,
   onMenu,
+  onOpenMedia,
 }: {
   message: Message
   mine: boolean
   grouped: boolean
   onMenu: (m: Message) => void
+  onOpenMedia: (m: Message) => void
 }) {
   const press = useLongPress(() => onMenu(m))
   const stamp = (
@@ -221,6 +237,8 @@ function Bubble({
         {stamp}
       </div>
     )
+  } else if (m.has_media) {
+    content = <MediaBubble message={m} mine={mine} stamp={stamp} onOpen={onOpenMedia} />
   } else if (m.contact) {
     content = <ContactBubble card={m.contact} mine={mine} stamp={stamp} />
   } else if (m.body && EMOJI_ONLY.test(m.body.trim())) {
@@ -313,7 +331,11 @@ function MessageMenu({ message, mine, onClose }: { message: Message | null; mine
   }
   const m = message
   return (
-    <Sheet open={!!m} onClose={onClose} title={m?.contact ? m.contact.full_name : 'Message'}>
+    <Sheet
+      open={!!m}
+      onClose={onClose}
+      title={m?.contact ? m.contact.full_name : m?.has_media ? (m.media?.kind === 'video' ? 'Video' : 'Photo') : 'Message'}
+    >
       {m && (
         <div className="-mx-2">
           {m.body && (
@@ -325,7 +347,7 @@ function MessageMenu({ message, mine, onClose }: { message: Message | null; mine
                 icon={<NotebookPen />}
                 onClick={run(() => actions.addNote({ title: '', body: m.body!, pinned: false }), 'Saved to Notes')}
               >
-                Save as a note <span className="text-xs font-normal text-muted">(notes aren't encrypted)</span>
+                Save as a note
               </MenuItem>
             </>
           )}
@@ -352,14 +374,17 @@ function MessageMenu({ message, mine, onClose }: { message: Message | null; mine
 function Composer({
   onSend,
   onAttach,
+  onPickMedia,
   onTyping,
 }: {
   onSend: (body: string) => Promise<void>
   onAttach: () => void
+  onPickMedia: (file: File) => void
   onTyping: () => void
 }) {
   const [text, setText] = useState('')
   const ref = useRef<HTMLTextAreaElement>(null)
+  const fileInput = useRef<HTMLInputElement>(null)
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -387,7 +412,22 @@ function Composer({
       }}
       className="flex shrink-0 items-end gap-1 border-t border-line bg-bg px-2 py-2"
     >
-      <IconButton label="Send a contact" onClick={onAttach} className="text-muted">
+      <IconButton label="Send a photo or video" onClick={() => fileInput.current?.click()} className="text-muted">
+        <ImagePlus />
+      </IconButton>
+      <input
+        ref={fileInput}
+        type="file"
+        accept="image/*,video/*"
+        hidden
+        aria-label="Photo or video to send"
+        onChange={(e) => {
+          const file = e.target.files?.[0]
+          e.target.value = ''
+          if (file) onPickMedia(file)
+        }}
+      />
+      <IconButton label="Send a contact" onClick={onAttach} className="-ml-1 text-muted">
         <ContactRound />
       </IconButton>
       <textarea
@@ -420,5 +460,177 @@ function Composer({
         <ArrowUp className="size-5" strokeWidth={2.5} />
       </button>
     </form>
+  )
+}
+
+// ─── View-once photos and videos ───────────────────────────────────────
+
+function MediaBubble({ message: m, mine, stamp, onOpen }: { message: Message; mine: boolean; stamp: ReactNode; onOpen: (m: Message) => void }) {
+  const video = m.media?.kind === 'video'
+  const Icon = video ? Film : Image
+  const what = video ? 'video' : 'photo'
+  const expired = !m.media_opened_at && isExpired(m.created_at)
+  const canOpen = !mine && !m.pending && !m.media_opened_at && !expired
+  const status = m.pending
+    ? 'Sending…'
+    : m.media_opened_at
+      ? 'Opened'
+      : expired
+        ? mine ? 'Expired without being opened' : 'Expired'
+        : mine ? 'View once · not opened yet' : 'View once'
+
+  const inner = (
+    <>
+      <span
+        className={cx(
+          'flex size-9 shrink-0 items-center justify-center rounded-full [&_svg]:size-[18px]',
+          canOpen ? 'bg-accent text-accent-ink' : 'bg-surface-2 text-muted',
+        )}
+      >
+        <Icon />
+      </span>
+      <span className="min-w-0 flex-1 text-left">
+        <span className="block font-medium">{canOpen ? `Tap to view ${what}` : video ? 'Video' : 'Photo'}</span>
+        <span className="block text-xs text-muted">{status}</span>
+      </span>
+      <span className="self-end text-muted">{stamp}</span>
+    </>
+  )
+  const cls = 'flex w-64 max-w-full items-center gap-3 rounded-[1.25rem] border border-line bg-surface px-3 py-2.5 text-ink'
+  return canOpen ? (
+    <button type="button" onClick={() => onOpen(m)} className={cx(cls, 'transition hover:border-accent/50')}>
+      {inner}
+    </button>
+  ) : (
+    <div className={cls}>{inner}</div>
+  )
+}
+
+function MediaSendSheet({ file, onClose, onSend }: { file: File | null; onClose: () => void; onSend: (file: File) => void }) {
+  const video = file?.type.startsWith('video/')
+  return (
+    <Sheet open={!!file} onClose={onClose} title={video ? 'Send a video' : 'Send a photo'}>
+      {file && <MediaSendBody file={file} onSend={onSend} />}
+    </Sheet>
+  )
+}
+
+function MediaSendBody({ file, onSend }: { file: File; onSend: (file: File) => void }) {
+  const { partner } = useSpace()
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => {
+    const u = URL.createObjectURL(file)
+    setUrl(u)
+    return () => URL.revokeObjectURL(u)
+  }, [file])
+  const video = file.type.startsWith('video/')
+  const supported = video || file.type.startsWith('image/')
+  let problem: string | null = supported ? null : 'Only photos and videos can be sent.'
+  if (video) {
+    try {
+      checkSize(file.size, 'video')
+    } catch (e) {
+      problem = errorMessage(e)
+    }
+  }
+
+  return (
+    <div className="space-y-4">
+      <div className="flex max-h-[45dvh] justify-center overflow-hidden rounded-2xl bg-black">
+        {url && supported && (video ? <video src={url} controls muted playsInline className="max-h-[45dvh]" /> : <img src={url} alt="" className="max-h-[45dvh] object-contain" />)}
+      </div>
+      <p className="text-sm text-muted">
+        <strong className="text-ink">View once.</strong> {partner?.display_name ?? 'Your person'} can open it one time, then it's
+        deleted. If it isn't opened within {MEDIA_TTL_DAYS} days, it's deleted anyway. It's encrypted on this phone before it's
+        sent{video ? `; videos can be up to ${Math.round(MAX_MEDIA_BYTES / 1024 / 1024)} MB` : ''}.
+      </p>
+      {problem && <p className="text-sm text-danger">{problem}</p>}
+      <Button className="w-full" disabled={!!problem} onClick={() => onSend(file)}>
+        Send view once
+      </Button>
+    </div>
+  )
+}
+
+/** Full-screen, one-time viewer. Opening it is what uses up the one view. */
+function MediaViewer({ message, onClose }: { message: Message | null; onClose: () => void }) {
+  const ref = useRef<HTMLDialogElement>(null)
+  useEffect(() => {
+    const d = ref.current
+    if (!d) return
+    if (message && !d.open) d.showModal()
+    if (!message && d.open) d.close()
+  }, [message])
+  return (
+    <dialog ref={ref} className="viewer" onClose={onClose} onContextMenu={(e) => e.preventDefault()}>
+      {message && <ViewerBody message={message} onClose={onClose} />}
+    </dialog>
+  )
+}
+
+function ViewerBody({ message, onClose }: { message: Message; onClose: () => void }) {
+  const { actions } = useSpace()
+  const [url, setUrl] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const used = useRef(false)
+
+  useEffect(() => {
+    let alive = true
+    let made: string | null = null
+    actions
+      .openMedia(message)
+      .then((u) => {
+        made = u
+        if (alive) setUrl(u)
+        else URL.revokeObjectURL(u)
+      })
+      .catch((e) => alive && setError(errorMessage(e)))
+    return () => {
+      alive = false
+      if (made) URL.revokeObjectURL(made)
+    }
+  }, [message, actions])
+
+  // It counts as opened once it's on screen: the file is deleted right then,
+  // so closing the app mid-view can't keep it around for a second look.
+  const onShown = () => {
+    if (used.current) return
+    used.current = true
+    actions.finishMedia(message).catch(() => {})
+  }
+
+  const video = message.media?.kind === 'video'
+  return (
+    <div className="no-callout flex h-full flex-col bg-black text-white">
+      <div className="flex shrink-0 items-center gap-2 px-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] pb-2">
+        <IconButton label="Close" onClick={onClose} className="text-white hover:bg-white/10">
+          <X />
+        </IconButton>
+        <span className="text-sm text-white/70">View once: this closes for good</span>
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)]">
+        {error ? (
+          <p className="max-w-xs text-center text-sm text-white/80">{error}</p>
+        ) : !url ? (
+          <div className="flex flex-col items-center gap-3 text-sm text-white/70">
+            <Spinner className="size-6 text-white/70" />
+            Decrypting…
+          </div>
+        ) : video ? (
+          <video
+            src={url}
+            autoPlay
+            playsInline
+            controls
+            controlsList="nodownload noplaybackrate noremoteplayback"
+            disablePictureInPicture
+            onLoadedData={onShown}
+            className="max-h-full max-w-full"
+          />
+        ) : (
+          <img src={url} alt="" draggable={false} onLoad={onShown} className="max-h-full max-w-full object-contain" />
+        )}
+      </div>
+    </div>
   )
 }

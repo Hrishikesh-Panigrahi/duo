@@ -186,3 +186,22 @@ dialog.sheet::backdrop {
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Full-screen, one-time viewer for photos and videos. */
+dialog.viewer {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  max-width: none;
+  height: var(--app-h, 100%);
+  max-height: none;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: #000;
+  color: #fff;
+}
+
+dialog.viewer::backdrop {
+  background: #000;
+}

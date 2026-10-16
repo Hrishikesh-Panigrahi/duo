@@ -26,7 +26,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 
 function SettingsBody() {
   const { space, me, partner, user, actions, e2e } = useSpace()
-  const [spaceName, setSpaceName] = useState(space!.name)
+  const [spaceName, setSpaceName] = useState(space?.name ?? '')
   const [myName, setMyName] = useState(me?.display_name ?? '')
   const install = useInstallPrompt()
 
@@ -46,7 +46,7 @@ function SettingsBody() {
             maxLength={60}
             onChange={(e) => setSpaceName(e.target.value)}
             onKeyDown={blurOnEnter}
-            onBlur={() => commit(spaceName, space?.name, actions.renameSpace, setSpaceName)}
+            onBlur={() => commit(spaceName, space?.name ?? undefined, actions.renameSpace, setSpaceName)}
           />
         </Field>
         <Field label="Your name">
@@ -55,7 +55,7 @@ function SettingsBody() {
             maxLength={40}
             onChange={(e) => setMyName(e.target.value)}
             onKeyDown={blurOnEnter}
-            onBlur={() => commit(myName, me?.display_name, actions.renameMe, setMyName)}
+            onBlur={() => commit(myName, me?.display_name ?? undefined, actions.renameMe, setMyName)}
           />
         </Field>
       </Section>
@@ -63,9 +63,9 @@ function SettingsBody() {
       <Section title="Your person">
         {partner ? (
           <div className="flex items-center gap-3 rounded-2xl bg-surface-2 p-3">
-            <Avatar name={partner.display_name} size={44} />
+            <Avatar name={partner.display_name ?? '?'} size={44} />
             <div>
-              <div className="font-semibold">{partner.display_name}</div>
+              <div className="font-semibold">{partner.display_name ?? 'Your person'}</div>
               <div className="text-sm text-muted">Joined {formatDay(todayYMD(new Date(partner.joined_at)))}</div>
             </div>
           </div>
