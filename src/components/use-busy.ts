@@ -1,0 +1,24 @@
+import { useState } from 'react'
+import { errorMessage, toastError } from './ui'
+
+/** Runs a screen's save or send with a busy flag, and reports a failure inline or (with `toast`) as a toast. */
+export function useBusy({ toast = false } = {}) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  /** After success it stays busy, since the screen is moving on, unless `settle` is set. */
+  async function run(task: () => Promise<unknown>, { settle = false } = {}) {
+    setBusy(true)
+    setError(null)
+    try {
+      await task()
+      if (settle) setBusy(false)
+    } catch (e) {
+      if (toast) toastError(e)
+      else setError(errorMessage(e))
+      setBusy(false)
+    }
+  }
+
+  return { busy, error, setError, run }
+}

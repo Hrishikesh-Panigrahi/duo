@@ -108,13 +108,26 @@ served from the same box behind Caddy or nginx with a TLS certificate. Trade-off
 ```
 supabase/migrations/   schema, row-level security, ciphertext-only rules, media bucket and its policies
 src/lib/e2e.ts         key derivation and encryption; every ciphertext is bound to what it is and where it belongs
-src/lib/store.tsx      loads a space's data, keeps it live over Realtime, and decrypts/encrypts it on the device
+src/lib/store.tsx      a space's data for the screens (useSpace), wiring together the pieces in src/lib/space/:
+  rows.ts                the rows as stored, and how they change
+  sync.ts                loading them and keeping them live over Realtime
+  device-key.ts          this device's key for the space
+  plaintext.ts, view.ts  decrypting rows, and turning them into what the screens show
+  room.ts                who's online and typing, and the sealed signalling for direct transfers
+  records.ts             the shared ways of writing encrypted rows that every action uses
+  *-actions.ts           everything the screens can do, as useSpace().actions.chat / .contacts / .notes /
+                         .lists / .names / .encryption
 src/lib/direct.ts      phone-to-phone delivery of photos and videos over WebRTC
 src/lib/inbox.ts       where a directly delivered file waits, still encrypted, until it's opened
 src/lib/media.ts       view-once photos and videos: shrinking, size limits, expiry
 src/lib/passphrase.ts  refusing guessable passphrases, and suggesting strong ones
 src/lib/vcard.ts       vCard 2.1/3.0/4.0 parsing and export
-src/features/          auth, space setup, and one file per tab (chat, contacts, lists, notes) + settings
+src/components/        shared UI pieces, the long-press menu, and useBusy for a form's save-and-report
+src/features/          auth, space setup, settings, and each tab:
+  chat.tsx, chat-media.tsx                       messages, and view-once photos and videos
+  contacts.tsx, contact-detail/form/import.tsx   the contact book, one contact, editing, importing
+  lists.tsx, list-view.tsx, list-form.tsx, coming-up.tsx
+  notes.tsx
 ```
 
 ## Not built yet

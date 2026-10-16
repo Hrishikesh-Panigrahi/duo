@@ -1,12 +1,7 @@
-// Invite links: https://<app>/join#ABCD-EFGH opens the app and joins that
-// space once you're signed in, so your person never types the code.
-//
-// The code sits after the #, which browsers never send to a server, so it
-// isn't in Cloudflare's logs or anyone's Referer. The app reads it once,
-// keeps it on this device until it's used (it has to survive signing up and
-// confirming an email), and clears it from the address bar straight away.
-// The link only gets someone into the space while the code is unused, and
-// never carries the passphrase: that's still shared in person.
+// Invite links: /join#ABCD-EFGH joins that space once you're signed in. The code sits after the #,
+// which browsers never send to a server, and the passphrase is never in the link.
+
+import { deviceStorage } from './device-storage'
 
 const STORE_KEY = 'duo:invite'
 /** Unused invites are forgotten after this. */
@@ -34,33 +29,29 @@ export function codeFromAddress(pathname: string, hash: string): string | null {
   }
 }
 
+/** An invite link's code, kept on this device until it's used: it has to survive signing up. */
 export const pendingInvite = {
   get(now = Date.now()): string | null {
+    let saved: { code?: unknown; at?: unknown } | null
     try {
-      const saved = JSON.parse(localStorage.getItem(STORE_KEY) ?? 'null') as { code?: unknown; at?: unknown } | null
-      if (!saved || typeof saved.code !== 'string' || typeof saved.at !== 'number') return null
-      if (now - saved.at > KEEP_MS) {
-        localStorage.removeItem(STORE_KEY)
-        return null
-      }
-      return normalizeCode(saved.code)
+      saved = JSON.parse(deviceStorage.get(STORE_KEY) ?? 'null')
     } catch {
       return null
     }
+    if (!saved || typeof saved.code !== 'string' || typeof saved.at !== 'number') return null
+    if (now - saved.at > KEEP_MS) {
+      deviceStorage.remove(STORE_KEY)
+      return null
+    }
+    return normalizeCode(saved.code)
   },
+
   set(code: string) {
-    try {
-      localStorage.setItem(STORE_KEY, JSON.stringify({ code, at: Date.now() }))
-    } catch {
-      // no storage: the link still works if they're already signed in
-    }
+    deviceStorage.set(STORE_KEY, JSON.stringify({ code, at: Date.now() }))
   },
+
   clear() {
-    try {
-      localStorage.removeItem(STORE_KEY)
-    } catch {
-      // nothing saved
-    }
+    deviceStorage.remove(STORE_KEY)
   },
 }
 

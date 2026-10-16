@@ -107,101 +107,60 @@ type Draft = { fn?: string; n?: string } & Omit<ContactCard, 'full_name'>
 
 /** Parses every card in a .vcf file. Handles vCard 2.1 (Android exports), 3.0 and 4.0. */
 export function parseVCards(text: string): ContactCard[] {
-  const lines = text
-    .replace(/^\uFEFF/, '')
-    .replace(/\r\n?/g, '\n')
-    .replace(/\n[ \t]/g, '') // unfold
-    .split('\n')
-
+  const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n') // unfolded
   const cards: ContactCard[] = []
-  let cur: Draft | null = null
-
+  let draft: Draft | null = null
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]
-    const colon = line.indexOf(':')
+    const colon = lines[i].indexOf(':')
     if (colon < 0) continue
-
-    const [rawName, ...params] = line.slice(0, colon).split(';')
+    const [rawName, ...params] = lines[i].slice(0, colon).split(';')
     const prop = rawName.split('.').pop()!.toUpperCase() // drop group prefixes like "item1."
-    const upperParams = params.map((p) => p.toUpperCase())
-    let value = line.slice(colon + 1)
-
-    if (upperParams.some((p) => p === 'ENCODING=QUOTED-PRINTABLE' || p === 'QUOTED-PRINTABLE')) {
+    let value = lines[i].slice(colon + 1)
+    if (params.some((p) => /^(ENCODING=)?QUOTED-PRINTABLE$/i.test(p))) {
       // vCard 2.1 soft line breaks: a trailing "=" continues onto the next line.
       while (value.endsWith('=') && i + 1 < lines.length) value = value.slice(0, -1) + lines[++i]
       value = decodeQuotedPrintable(value)
     }
-
-    if (prop === 'BEGIN' && value.trim().toUpperCase() === 'VCARD') {
-      cur = { phones: [], emails: [] }
-      continue
-    }
-    if (!cur) continue
-
-    switch (prop) {
-      case 'END': {
-        const n = cur.n ? splitStructured(cur.n) : []
-        // N is family;given;additional;prefix;suffix
-        const fromN = [n[3], n[1], n[2], n[0], n[4]].filter(Boolean).join(' ')
-        const full_name = (cur.fn?.trim() || fromN || cur.company || cur.phones[0] || cur.emails[0] || '').trim()
-        if (full_name) {
-          cards.push({
-            full_name,
-            phones: cur.phones,
-            emails: cur.emails,
-            company: cur.company ?? null,
-            address: cur.address ?? null,
-            birthday: cur.birthday ?? null,
-            notes: cur.notes ?? null,
-          })
-        }
-        cur = null
-        break
-      }
-      case 'FN':
-        cur.fn = unescapeValue(value)
-        break
-      case 'N':
-        cur.n = value
-        break
-      case 'TEL': {
-        const tel = unescapeValue(value).replace(/^tel:/i, '').trim()
-        if (tel) cur.phones.push(tel)
-        break
-      }
-      case 'EMAIL': {
-        const email = unescapeValue(value).replace(/^mailto:/i, '').trim()
-        if (email) cur.emails.push(email)
-        break
-      }
-      case 'ORG':
-        cur.company = splitStructured(value).filter(Boolean).join(', ') || null
-        break
-      case 'ADR':
-        cur.address = splitStructured(value).filter(Boolean).join(', ') || null
-        break
-      case 'BDAY':
-        cur.birthday = parseBirthday(value)
-        break
-      case 'NOTE':
-        cur.notes = unescapeValue(value).trim() || null
-        break
-    }
+    if (prop === 'BEGIN' && value.trim().toUpperCase() === 'VCARD') draft = { phones: [], emails: [] }
+    else if (draft && prop === 'END') {
+      const card = finishCard(draft)
+      if (card) cards.push(card)
+      draft = null
+    } else if (draft) readProperty(draft, prop, value)
   }
   return cards
+}
+
+function readProperty(d: Draft, prop: string, value: string) {
+  if (prop === 'FN') d.fn = unescapeValue(value)
+  else if (prop === 'N') d.n = value
+  else if (prop === 'TEL') d.phones.push(unescapeValue(value).replace(/^tel:/i, '').trim())
+  else if (prop === 'EMAIL') d.emails.push(unescapeValue(value).replace(/^mailto:/i, '').trim())
+  else if (prop === 'ORG') d.company = splitStructured(value).filter(Boolean).join(', ') || null
+  else if (prop === 'ADR') d.address = splitStructured(value).filter(Boolean).join(', ') || null
+  else if (prop === 'BDAY') d.birthday = parseBirthday(value)
+  else if (prop === 'NOTE') d.notes = unescapeValue(value).trim() || null
+}
+
+function finishCard(d: Draft): ContactCard | null {
+  const phones = d.phones.filter(Boolean)
+  const emails = d.emails.filter(Boolean)
+  const n = d.n ? splitStructured(d.n) : []
+  // N is family;given;additional;prefix;suffix
+  const fromN = [n[3], n[1], n[2], n[0], n[4]].filter(Boolean).join(' ')
+  const full_name = (d.fn?.trim() || fromN || d.company || phones[0] || emails[0] || '').trim()
+  if (!full_name) return null
+  const { company = null, address = null, birthday = null, notes = null } = d
+  return { full_name, phones, emails, company, address, birthday, notes }
 }
 
 export function vcardFileName(name: string): string {
   return (name.trim().replace(/[\\/:*?"<>|]+/g, '').replace(/\s+/g, ' ') || 'contact') + '.vcf'
 }
 
-function vcardFile(card: ContactCard): File {
-  return new File([toVCard(card)], vcardFileName(card.full_name), { type: 'text/vcard' })
-}
-
 /** Downloads a .vcf. On iPhone this opens the "Create New Contact" preview. */
 export function downloadVCard(card: ContactCard) {
-  const url = URL.createObjectURL(vcardFile(card))
+  const url = URL.createObjectURL(new File([toVCard(card)], vcardFileName(card.full_name), { type: 'text/vcard' }))
   const a = document.createElement('a')
   a.href = url
   a.download = vcardFileName(card.full_name)
@@ -213,7 +172,7 @@ export function downloadVCard(card: ContactCard) {
 
 /** Opens the phone's share sheet with the contact as a file; falls back to download. */
 export async function shareVCard(card: ContactCard) {
-  const file = vcardFile(card)
+  const file = new File([toVCard(card)], vcardFileName(card.full_name), { type: 'text/vcard' })
   if (navigator.canShare?.({ files: [file] })) {
     try {
       await navigator.share({ files: [file], title: card.full_name })

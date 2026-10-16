@@ -124,18 +124,10 @@ export function Chip({ children, active, onClick }: { children: ReactNode; activ
   )
 }
 
+type MenuItemProps = { icon: ReactNode; children: ReactNode; danger?: boolean; onClick: () => void }
+
 /** A row in an action menu (inside a Sheet). */
-export function MenuItem({
-  icon,
-  children,
-  danger,
-  onClick,
-}: {
-  icon: ReactNode
-  children: ReactNode
-  danger?: boolean
-  onClick: () => void
-}) {
+export function MenuItem({ icon, children, danger, onClick }: MenuItemProps) {
   return (
     <button
       type="button"
@@ -173,42 +165,25 @@ export function Splash() {
   )
 }
 
-/**
- * A bottom sheet on phones, a centered dialog on wider screens. Built on
- * <dialog> for focus trapping and Esc-to-close. Children mount only while open,
- * so each opening starts fresh.
- */
-export function Sheet({
-  open,
-  onClose,
-  title,
-  children,
-  actions,
-}: {
+type SheetProps = {
   open: boolean
   onClose: () => void
   title?: ReactNode
   children: ReactNode
   /** Extra header buttons, left of the close button. */
   actions?: ReactNode
-}) {
+}
+
+/** A bottom sheet on phones, a dialog on wider screens. Children mount only while open, so each opening starts fresh. */
+export function Sheet({ open, onClose, title, children, actions }: SheetProps) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => {
     const d = ref.current
-    if (!d) return
-    if (open && !d.open) d.showModal()
-    if (!open && d.open) d.close()
+    if (open && d && !d.open) d.showModal()
+    if (!open && d?.open) d.close()
   }, [open])
-
   return (
-    <dialog
-      ref={ref}
-      className="sheet"
-      onClose={onClose}
-      onClick={(e) => {
-        if (e.target === ref.current) onClose()
-      }}
-    >
+    <dialog ref={ref} className="sheet" onClose={onClose} onClick={(e) => e.target === ref.current && onClose()}>
       {open && (
         <div className="sheet-panel">
           <header className="flex shrink-0 items-center gap-1 py-2 pr-2 pl-5">
@@ -246,39 +221,35 @@ export function errorMessage(e: unknown): string {
 
 export const toastError = (e: unknown) => toast(errorMessage(e), 'error')
 
-/**
- * Lives in the browser's top layer (popover) so toasts show above open sheets.
- * Re-shown on every change so it stacks above whichever dialog opened last.
- */
-export function Toaster() {
+function useToasts(): ToastMsg[] {
   const [items, setItems] = useState<ToastMsg[]>([])
-  const ref = useRef<HTMLDivElement>(null)
-
   useEffect(() => {
-    const onToast = (t: ToastMsg) => {
+    const show = (t: ToastMsg) => {
       setItems((xs) => [...xs.slice(-2), t])
       setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== t.id)), t.tone === 'error' ? 5000 : 2600)
     }
-    toastListeners.add(onToast)
-    return () => void toastListeners.delete(onToast)
+    toastListeners.add(show)
+    return () => void toastListeners.delete(show)
   }, [])
+  return items
+}
 
+/** In the browser's top layer (a popover), re-shown on every change so it sits above the newest sheet. */
+export function Toaster() {
+  const items = useToasts()
+  const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = ref.current
     if (!el || typeof el.showPopover !== 'function') return
     if (el.matches(':popover-open')) el.hidePopover()
     if (items.length) el.showPopover()
   }, [items])
-
   return (
     <div ref={ref} popover="manual" className="toaster" role="status" aria-live="polite">
       {items.map((t) => (
         <div
           key={t.id}
-          className={cx(
-            'rounded-full px-4 py-2.5 text-sm font-medium shadow-lg',
-            t.tone === 'error' ? 'bg-danger text-white' : 'bg-ink text-bg',
-          )}
+          className={cx('rounded-full px-4 py-2.5 text-sm font-medium shadow-lg', t.tone === 'error' ? 'bg-danger text-white' : 'bg-ink text-bg')}
         >
           {t.text}
         </div>

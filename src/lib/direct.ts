@@ -1,17 +1,5 @@
-// Direct phone-to-phone delivery of view-once photos and videos, used when
-// both apps are open, so the file never touches a server.
-//
-// The file is already end-to-end encrypted before it gets here. WebRTC adds
-// its own encryption on top, and the signalling messages that set up the
-// connection travel over Supabase Realtime sealed with the space's key, so
-// nobody else can join or even see the phones' network addresses.
-//
-// If a direct connection can't be made (some mobile networks block them),
-// sendFile rejects and the caller falls back to encrypted Storage.
-//
-// Only Cloudflare's STUN server is used (to learn each phone's public
-// address), since Cloudflare already serves the app. There's deliberately no
-// relay (TURN) server: a file either goes phone to phone or not at all.
+// Sends already-encrypted files phone to phone over WebRTC; if that fails, the caller uses Storage.
+// Only STUN, deliberately no TURN relay: a file goes phone to phone or not at all.
 
 export const ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.cloudflare.com:3478' }]
 /** Safe for every browser's data channel message size. */
@@ -19,18 +7,29 @@ export const CHUNK_BYTES = 16 * 1024
 const CONNECT_TIMEOUT_MS = 8_000
 const TRANSFER_TIMEOUT_MS = 120_000
 const MAX_FILE_BYTES = 50 * 1024 * 1024
-/** At most this many incoming transfers at once. */
 const MAX_INCOMING = 4
 const STORED = 'stored'
 
 type Route = { session: string; from: string; to: string }
+type Offer = Route & { type: 'offer'; sdp: RTCSessionDescriptionInit }
 export type Signal =
-  | (Route & { type: 'offer'; sdp: RTCSessionDescriptionInit })
+  | Offer
   | (Route & { type: 'answer'; sdp: RTCSessionDescriptionInit })
   | (Route & { type: 'ice'; candidate: RTCIceCandidateInit })
   | (Route & { type: 'bye' })
 
 export type Header = { messageId: string; size: number }
+
+export type LinkOptions = {
+  selfId: string
+  sendSignal: (s: Signal) => Promise<void>
+  /** Only the other member of the space may send us files. */
+  acceptFrom: (userId: string) => boolean
+  /** Receives the still-encrypted bytes; must have stored them when it resolves. */
+  onFile: (messageId: string, bytes: ArrayBuffer) => Promise<void>
+}
+
+type Link = LinkOptions & { sessions: Map<string, Transfer>; signalQuietly: (s: Signal) => void }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
@@ -47,7 +46,6 @@ export function parseHeader(data: unknown): Header | null {
   }
 }
 
-/** Joins received chunks back into one buffer. */
 export function joinChunks(parts: ArrayBuffer[], size: number): ArrayBuffer {
   const out = new Uint8Array(size)
   let at = 0
@@ -58,178 +56,206 @@ export function joinChunks(parts: ArrayBuffer[], size: number): ArrayBuffer {
   return out.buffer
 }
 
-export const directSupported = () => typeof RTCPeerConnection !== 'undefined'
+/** Rebuilds one file from a data channel: a header, then exactly that many bytes. */
+export class FileAssembler {
+  private header: Header | null = null
+  private parts: ArrayBuffer[] = []
+  private received = 0
 
-type Session = { pc: RTCPeerConnection; pendingIce: RTCIceCandidateInit[]; remoteSet: boolean; answered?: boolean; abort: () => void }
-
-export function createDirectLink(opts: {
-  selfId: string
-  sendSignal: (s: Signal) => Promise<void>
-  /** Only the other member of the space may send us files. */
-  acceptFrom: (userId: string) => boolean
-  /** Receives the still-encrypted bytes; must have stored them when it resolves. */
-  onFile: (messageId: string, bytes: ArrayBuffer) => Promise<void>
-}) {
-  const sessions = new Map<string, Session>()
-  const signal = (s: Signal) => opts.sendSignal(s).catch(() => {})
-
-  async function addRemote(s: Session, sdp: RTCSessionDescriptionInit) {
-    await s.pc.setRemoteDescription(sdp)
-    s.remoteSet = true
-    for (const c of s.pendingIce.splice(0)) await s.pc.addIceCandidate(c).catch(() => {})
-  }
-
-  /** Sends encrypted bytes to `to`. Resolves once their phone has stored them. */
-  function sendFile(to: string, messageId: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const session = crypto.randomUUID()
-      const route = { session, from: opts.selfId, to }
-      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-      const dc = pc.createDataChannel('media', { ordered: true })
-      dc.binaryType = 'arraybuffer'
-      dc.bufferedAmountLowThreshold = 1 << 20
-      let settled = false
-
-      const finish = (err?: Error) => {
-        if (settled) return
-        settled = true
-        clearTimeout(connectTimer)
-        clearTimeout(transferTimer)
-        sessions.delete(session)
-        try {
-          dc.close()
-        } catch {
-          // already closed
-        }
-        pc.close()
-        if (err) {
-          void signal({ ...route, type: 'bye' })
-          reject(err)
-        } else {
-          resolve()
-        }
-      }
-      const connectTimer = setTimeout(() => finish(new Error("Couldn't connect directly")), CONNECT_TIMEOUT_MS)
-      const transferTimer = setTimeout(() => finish(new Error('Direct transfer took too long')), TRANSFER_TIMEOUT_MS)
-      sessions.set(session, { pc, pendingIce: [], remoteSet: false, abort: () => finish(new Error('The other phone stopped the transfer')) })
-
-      pc.onicecandidate = (e) => {
-        if (e.candidate) void signal({ ...route, type: 'ice', candidate: e.candidate.toJSON() })
-      }
-      pc.onconnectionstatechange = () => {
-        if (pc.connectionState === 'failed') finish(new Error("Couldn't connect directly"))
-      }
-      dc.onopen = async () => {
-        clearTimeout(connectTimer)
-        try {
-          dc.send(JSON.stringify({ messageId, size: bytes.byteLength } satisfies Header))
-          for (let at = 0; at < bytes.byteLength; at += CHUNK_BYTES) {
-            if (dc.bufferedAmount > dc.bufferedAmountLowThreshold) {
-              await new Promise((r) => dc.addEventListener('bufferedamountlow', r, { once: true }))
-            }
-            dc.send(bytes.subarray(at, at + CHUNK_BYTES))
-          }
-        } catch (e) {
-          finish(e as Error)
-        }
-      }
-      dc.onmessage = (e) => {
-        if (e.data === STORED) finish()
-      }
-      dc.onclose = () => finish(new Error('The direct connection closed early'))
-
-      void (async () => {
-        await pc.setLocalDescription(await pc.createOffer())
-        await opts.sendSignal({ ...route, type: 'offer', sdp: pc.localDescription!.toJSON() })
-      })().catch((e) => finish(e as Error))
-    })
-  }
-
-  function receive(offer: Extract<Signal, { type: 'offer' }>) {
-    const route = { session: offer.session, from: opts.selfId, to: offer.from }
-    const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
-    let done = false
-    const cleanup = () => {
-      if (done) return
-      done = true
-      clearTimeout(timer)
-      sessions.delete(offer.session)
-      pc.close()
+  /** The finished file, 'invalid' for anything unexpected, or null while there's more to come. */
+  take(data: unknown): { messageId: string; bytes: ArrayBuffer } | 'invalid' | null {
+    if (!this.header) {
+      this.header = parseHeader(data)
+      return this.header ? null : 'invalid'
     }
-    const timer = setTimeout(cleanup, TRANSFER_TIMEOUT_MS)
-    const s: Session = { pc, pendingIce: [], remoteSet: false, abort: cleanup }
-    sessions.set(offer.session, s)
-
-    pc.onicecandidate = (e) => {
-      if (e.candidate) void signal({ ...route, type: 'ice', candidate: e.candidate.toJSON() })
-    }
-    pc.ondatachannel = (e) => {
-      const dc = e.channel
-      dc.binaryType = 'arraybuffer'
-      let header: Header | null = null
-      const parts: ArrayBuffer[] = []
-      let received = 0
-      let complete = false
-      dc.onmessage = (ev) => {
-        if (complete) return
-        if (!header) {
-          header = parseHeader(ev.data)
-          if (!header) cleanup()
-          return
-        }
-        if (!(ev.data instanceof ArrayBuffer)) return cleanup()
-        parts.push(ev.data)
-        received += ev.data.byteLength
-        if (received > header.size) return cleanup()
-        if (received < header.size) return
-        complete = true
-        const bytes = joinChunks(parts, received)
-        parts.length = 0
-        // Only say it's stored once it is; otherwise the sender falls back to Storage.
-        opts.onFile(header.messageId, bytes).then(
-          () => {
-            dc.send(STORED)
-            setTimeout(cleanup, 1_000)
-          },
-          cleanup,
-        )
-      }
-    }
-
-    void (async () => {
-      await addRemote(s, offer.sdp)
-      await pc.setLocalDescription(await pc.createAnswer())
-      await opts.sendSignal({ ...route, type: 'answer', sdp: pc.localDescription!.toJSON() })
-    })().catch(cleanup)
-  }
-
-  return {
-    sendFile,
-
-    /** Handles a decrypted signalling message from the other phone. */
-    handleSignal(s: Signal) {
-      if (s.to !== opts.selfId || !opts.acceptFrom(s.from)) return
-      if (s.type === 'offer') {
-        if (directSupported() && !sessions.has(s.session) && sessions.size < MAX_INCOMING) receive(s)
-        return
-      }
-      const session = sessions.get(s.session)
-      if (!session) return
-      if (s.type === 'answer') {
-        // If they're signed in on two devices, both answer; the first one wins.
-        if (session.answered) return
-        session.answered = true
-        void addRemote(session, s.sdp).catch(() => session.abort())
-      } else if (s.type === 'ice') {
-        if (session.remoteSet) void session.pc.addIceCandidate(s.candidate).catch(() => {})
-        else session.pendingIce.push(s.candidate)
-      } else if (s.type === 'bye') session.abort()
-    },
-
-    close() {
-      for (const s of sessions.values()) s.abort()
-    },
+    if (!(data instanceof ArrayBuffer)) return 'invalid'
+    this.parts.push(data)
+    this.received += data.byteLength
+    if (this.received > this.header.size) return 'invalid'
+    if (this.received < this.header.size) return null
+    const bytes = joinChunks(this.parts, this.received)
+    this.parts = []
+    return { messageId: this.header.messageId, bytes }
   }
 }
 
-export type DirectLink = ReturnType<typeof createDirectLink>
+/** One peer connection, from offer to close, in either direction. */
+abstract class Transfer {
+  readonly pc = new RTCPeerConnection({ iceServers: ICE_SERVERS })
+  private pendingIce: RTCIceCandidateInit[] = []
+  private remoteSet = false
+  private answered = false
+  private ended = false
+
+  constructor(
+    protected readonly link: Link,
+    protected readonly route: Route,
+  ) {
+    link.sessions.set(route.session, this)
+    this.pc.onicecandidate = (e) => {
+      if (e.candidate) link.signalQuietly({ ...route, type: 'ice', candidate: e.candidate.toJSON() })
+    }
+  }
+
+  abstract abort(): void
+
+  acceptAnswer(sdp: RTCSessionDescriptionInit) {
+    // If they're signed in on two devices, both answer; the first one wins.
+    if (this.answered) return
+    this.answered = true
+    this.addRemote(sdp).catch(() => this.abort())
+  }
+
+  addIce(candidate: RTCIceCandidateInit) {
+    if (this.remoteSet) void this.pc.addIceCandidate(candidate).catch(() => {})
+    else this.pendingIce.push(candidate)
+  }
+
+  protected async addRemote(sdp: RTCSessionDescriptionInit) {
+    await this.pc.setRemoteDescription(sdp)
+    this.remoteSet = true
+    for (const c of this.pendingIce.splice(0)) await this.pc.addIceCandidate(c).catch(() => {})
+  }
+
+  protected async sendDescription(type: 'offer' | 'answer') {
+    await this.pc.setLocalDescription(type === 'offer' ? await this.pc.createOffer() : await this.pc.createAnswer())
+    await this.link.sendSignal({ ...this.route, type, sdp: this.pc.localDescription!.toJSON() })
+  }
+
+  /** False if it had already ended. */
+  protected end(): boolean {
+    if (this.ended) return false
+    this.ended = true
+    this.link.sessions.delete(this.route.session)
+    return true
+  }
+}
+
+class OutgoingTransfer extends Transfer {
+  readonly done: Promise<void>
+  private readonly dc: RTCDataChannel
+  private settle: (err?: Error) => void = () => {}
+  private readonly connectTimer = setTimeout(() => this.finish(new Error("Couldn't connect directly")), CONNECT_TIMEOUT_MS)
+  private readonly transferTimer = setTimeout(() => this.finish(new Error('Direct transfer took too long')), TRANSFER_TIMEOUT_MS)
+
+  constructor(link: Link, to: string, messageId: string, bytes: Uint8Array<ArrayBuffer>) {
+    super(link, { session: crypto.randomUUID(), from: link.selfId, to })
+    this.done = new Promise((resolve, reject) => (this.settle = (err) => (err ? reject(err) : resolve())))
+    this.dc = this.pc.createDataChannel('media', { ordered: true })
+    this.dc.binaryType = 'arraybuffer'
+    this.dc.bufferedAmountLowThreshold = 1 << 20
+    this.dc.onopen = () => void this.upload(messageId, bytes)
+    this.dc.onclose = () => this.finish(new Error('The direct connection closed early'))
+    this.dc.onmessage = (e) => {
+      if (e.data === STORED) this.finish()
+    }
+    this.pc.onconnectionstatechange = () => {
+      if (this.pc.connectionState === 'failed') this.finish(new Error("Couldn't connect directly"))
+    }
+    this.sendDescription('offer').catch((e: Error) => this.finish(e))
+  }
+
+  abort() {
+    this.finish(new Error('The other phone stopped the transfer'))
+  }
+
+  private async upload(messageId: string, bytes: Uint8Array<ArrayBuffer>) {
+    clearTimeout(this.connectTimer)
+    try {
+      this.dc.send(JSON.stringify({ messageId, size: bytes.byteLength } satisfies Header))
+      for (let at = 0; at < bytes.byteLength; at += CHUNK_BYTES) {
+        if (this.dc.bufferedAmount > this.dc.bufferedAmountLowThreshold) {
+          await new Promise((r) => this.dc.addEventListener('bufferedamountlow', r, { once: true }))
+        }
+        this.dc.send(bytes.subarray(at, at + CHUNK_BYTES))
+      }
+    } catch (e) {
+      this.finish(e as Error)
+    }
+  }
+
+  private finish(err?: Error) {
+    if (!this.end()) return
+    clearTimeout(this.connectTimer)
+    clearTimeout(this.transferTimer)
+    try {
+      this.dc.close()
+    } catch {
+      // already closed
+    }
+    this.pc.close()
+    if (err) this.link.signalQuietly({ ...this.route, type: 'bye' })
+    this.settle(err)
+  }
+}
+
+class IncomingTransfer extends Transfer {
+  private readonly timer = setTimeout(() => this.abort(), TRANSFER_TIMEOUT_MS)
+
+  constructor(link: Link, offer: Offer) {
+    super(link, { session: offer.session, from: link.selfId, to: offer.from })
+    this.pc.ondatachannel = (e) => this.receive(e.channel)
+    this.answer(offer.sdp).catch(() => this.abort())
+  }
+
+  abort() {
+    if (!this.end()) return
+    clearTimeout(this.timer)
+    this.pc.close()
+  }
+
+  private async answer(sdp: RTCSessionDescriptionInit) {
+    await this.addRemote(sdp)
+    await this.sendDescription('answer')
+  }
+
+  private receive(dc: RTCDataChannel) {
+    const file = new FileAssembler()
+    let complete = false
+    dc.binaryType = 'arraybuffer'
+    dc.onmessage = (e) => {
+      if (complete) return
+      const taken = file.take(e.data)
+      if (taken === 'invalid') return this.abort()
+      if (!taken) return
+      complete = true
+      // Only say it's stored once it is; otherwise the sender falls back to Storage.
+      this.link.onFile(taken.messageId, taken.bytes).then(() => {
+        dc.send(STORED)
+        setTimeout(() => this.abort(), 1_000)
+      }, () => this.abort())
+    }
+  }
+}
+
+export class DirectLink {
+  private readonly link: Link
+
+  constructor(options: LinkOptions) {
+    this.link = { ...options, sessions: new Map(), signalQuietly: (s) => void options.sendSignal(s).catch(() => {}) }
+  }
+
+  /** Resolves once the other phone has stored the bytes. */
+  async sendFile(to: string, messageId: string, bytes: Uint8Array<ArrayBuffer>): Promise<void> {
+    return new OutgoingTransfer(this.link, to, messageId, bytes).done
+  }
+
+  /** Handles a decrypted signalling message from the other phone. */
+  handleSignal(s: Signal) {
+    const { sessions, selfId, acceptFrom } = this.link
+    if (s.to !== selfId || !acceptFrom(s.from)) return
+    if (s.type === 'offer') {
+      const canTake = typeof RTCPeerConnection !== 'undefined' && !sessions.has(s.session) && sessions.size < MAX_INCOMING
+      if (canTake) new IncomingTransfer(this.link, s)
+      return
+    }
+    const transfer = sessions.get(s.session)
+    if (s.type === 'answer') transfer?.acceptAnswer(s.sdp)
+    else if (s.type === 'ice') transfer?.addIce(s.candidate)
+    else if (s.type === 'bye') transfer?.abort()
+  }
+
+  close() {
+    for (const transfer of this.link.sessions.values()) transfer.abort()
+  }
+}

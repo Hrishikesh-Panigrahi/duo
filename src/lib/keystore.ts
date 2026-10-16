@@ -1,7 +1,5 @@
-// Keeps each space's encryption key on this device, in IndexedDB. Keys are
-// non-extractable CryptoKeys: stored and used, but their bytes can't be read.
-// If IndexedDB is unavailable (some private modes), callers fall back to
-// keeping the key in memory, and the passphrase is asked for again next time.
+// Each space's key, kept on this device as a non-extractable CryptoKey: usable, but its bytes can't be read.
+// Without IndexedDB (some private modes) the key stays in memory and the passphrase is asked for next time.
 
 const DB_NAME = 'duo-keys'
 const STORE = 'keys'

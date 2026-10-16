@@ -12,12 +12,7 @@ export const supabase = createClient(url || 'http://localhost', key || 'not-conf
 
 type ServerError = { message: string; code?: string }
 
-/**
- * Turns a server error into something safe to show. Only messages our own
- * database functions raise on purpose (code P0001, like "That invite code
- * doesn't match any space") are shown as they are; anything else would name
- * tables, columns or rules, so people see a plain message instead.
- */
+/** Something safe to show: only our own functions' messages (P0001) pass through, never table or rule names. */
 export function serverError(error: ServerError): Error {
   if (import.meta.env.DEV) console.warn('Server error', error)
   if (error.code === 'P0001') return new Error(error.message)

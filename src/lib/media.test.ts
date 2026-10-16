@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_MEDIA_BYTES, checkSize, fitWithin, isExpired, mediaPath } from './media'
+import { MAX_MEDIA_BYTES, PLAYABLE_TYPE, checkSize, fitWithin, isExpired, mediaPath } from './media'
 
 describe('view-once media helpers', () => {
   it('rejects videos over the limit with a message that says how big they are', () => {
@@ -22,6 +22,15 @@ describe('view-once media helpers', () => {
     const daysAgo = (d: number) => new Date(now - d * 86_400_000).toISOString()
     expect(isExpired(daysAgo(2.9), now)).toBe(false)
     expect(isExpired(daysAgo(3.1), now)).toBe(true)
+  })
+
+  it('only ever sends or opens photo and video types, never SVG or a page', () => {
+    for (const ok of ['image/jpeg', 'image/png', 'image/heic', 'image/webp', 'video/mp4', 'video/webm', 'video/quicktime']) {
+      expect(PLAYABLE_TYPE.test(ok)).toBe(true)
+    }
+    for (const bad of ['image/svg+xml', 'IMAGE/SVG+XML', 'text/html', 'application/xhtml+xml', 'text/javascript', '', 'image/', 'image/png; x=<script>', 'video/mp4\ntext/html']) {
+      expect(PLAYABLE_TYPE.test(bad)).toBe(false)
+    }
   })
 
   it('stores files under the space, named by message', () => {

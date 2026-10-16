@@ -1,5 +1,4 @@
-// Date-only values ("YYYY-MM-DD") are calendar days, not instants, so they're
-// handled as local dates throughout to avoid off-by-one-day timezone bugs.
+// Date-only values ("YYYY-MM-DD") are calendar days, not instants: handled as local dates, so no timezone shifts.
 
 /** Birthdays stored with this year have no known year (iOS uses the same trick). */
 export const NO_YEAR = 1604
@@ -26,17 +25,16 @@ export function daysBetween(a: string, b: string): number {
   return Math.round((Date.UTC(y.y, y.m - 1, y.d) - Date.UTC(x.y, x.m - 1, x.d)) / 86_400_000)
 }
 
-const isLeap = (y: number) => (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
-
 /** Next occurrence of a birthday on or after `today`. Feb 29 falls on Feb 28 in other years. */
 export function nextBirthday(birthday: string, today: string): { date: string; daysAway: number; turning: number | null } {
   const b = parseYMD(birthday)
-  const t = parseYMD(today)
-  const on = (year: number) => toYMDString({ y: year, m: b.m, d: b.m === 2 && b.d === 29 && !isLeap(year) ? 28 : b.d })
-  let date = on(t.y)
-  if (daysBetween(today, date) < 0) date = on(t.y + 1)
-  const year = parseYMD(date).y
-  return { date, daysAway: daysBetween(today, date), turning: b.y === NO_YEAR ? null : year - b.y }
+  const thisYear = parseYMD(today).y
+  const [thisTime, nextTime] = [thisYear, thisYear + 1].map((y) => {
+    const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
+    const date = toYMDString({ y, m: b.m, d: b.m === 2 && b.d === 29 && !leap ? 28 : b.d })
+    return { date, daysAway: daysBetween(today, date), turning: b.y === NO_YEAR ? null : y - b.y }
+  })
+  return thisTime.daysAway >= 0 ? thisTime : nextTime
 }
 
 const monthFmt = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })

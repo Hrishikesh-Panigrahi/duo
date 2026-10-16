@@ -1,6 +1,5 @@
-// Photos and videos delivered straight from the other phone wait here, on this
-// device, until they're opened. They're kept exactly as they arrived: still
-// end-to-end encrypted, never as a readable image or video.
+// Photos and videos delivered straight from the other phone wait here until they're opened,
+// exactly as they arrived: still end-to-end encrypted.
 
 const DB_NAME = 'duo-inbox'
 const STORE = 'media'

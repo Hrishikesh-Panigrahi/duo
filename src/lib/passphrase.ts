@@ -1,7 +1,5 @@
-// The passphrase is the one thing standing between a copy of the database and
-// everything in it: whoever has that copy can try guesses offline, as fast as
-// their hardware allows. PBKDF2 makes each guess slow, but only a passphrase
-// nobody would guess makes guessing hopeless.
+// Whoever copies the database can guess passphrases offline. PBKDF2 makes each guess slow;
+// only a passphrase nobody would guess makes guessing hopeless.
 import { MIN_PASSPHRASE_LENGTH } from './e2e'
 
 // The first things anyone tries. Stripped out before judging what's left.
