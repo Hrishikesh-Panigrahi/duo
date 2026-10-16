@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from 'react'
 import { Copy, Share2 } from 'lucide-react'
 import { must, supabase } from '../lib/supabase'
+import { signOut } from '../lib/session'
 import { Button, Field, Input, errorMessage, toast, toastError } from '../components/ui'
 import { AuthLayout } from './auth'
 
@@ -126,7 +127,7 @@ export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceI
           {mode === 'create' ? 'Create space' : 'Join'}
         </Button>
       </form>
-      <button className="mx-auto mt-6 block text-sm text-muted" onClick={() => supabase.auth.signOut()}>
+      <button className="mx-auto mt-6 block text-sm text-muted" onClick={() => signOut()}>
         Sign out
       </button>
     </AuthLayout>

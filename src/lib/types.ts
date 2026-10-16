@@ -1,6 +1,14 @@
 import type { ContactCard } from './vcard'
 
-export type Space = { id: string; name: string; invite_code: string | null; created_at: string }
+export type Space = {
+  id: string
+  name: string
+  invite_code: string | null
+  created_at: string
+  /** Set once end-to-end encryption is turned on for the space. */
+  e2e_salt: string | null
+  e2e_check: string | null
+}
 
 export type Member = { space_id: string; user_id: string; display_name: string; joined_at: string }
 
@@ -22,9 +30,15 @@ export type Message = {
   sender_id: string
   body: string | null
   contact: ContactCard | null
+  /** End-to-end encrypted body and contact; the server never sees them in the clear. */
+  cipher?: string | null
   created_at: string
   /** Client-only: shown before the server confirms. */
   pending?: boolean
+  /** Client-only: encrypted, and this device can't read it yet (no key, or still decrypting). */
+  locked?: boolean
+  /** Client-only: encrypted, and decrypting it failed. */
+  undecryptable?: boolean
 }
 
 export type Note = {

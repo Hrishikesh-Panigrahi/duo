@@ -1,7 +1,7 @@
 import { useState, type KeyboardEvent, type ReactNode } from 'react'
-import { Download, LogOut, Share } from 'lucide-react'
+import { Download, Lock, LogOut, Share } from 'lucide-react'
 import { useSpace } from '../lib/store'
-import { supabase } from '../lib/supabase'
+import { signOut } from '../lib/session'
 import { formatDay, todayYMD } from '../lib/dates'
 import { isIOS, isStandalone, useInstallPrompt } from '../lib/device'
 import { Avatar, Button, Field, Input, Sheet, toast, toastError } from '../components/ui'
@@ -25,7 +25,7 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function SettingsBody() {
-  const { space, me, partner, user, actions } = useSpace()
+  const { space, me, partner, user, actions, e2e } = useSpace()
   const [spaceName, setSpaceName] = useState(space!.name)
   const [myName, setMyName] = useState(me?.display_name ?? '')
   const install = useInstallPrompt()
@@ -77,6 +77,30 @@ function SettingsBody() {
         ) : null}
       </Section>
 
+      <Section title="Encryption">
+        {!e2e.enabled ? (
+          <p className="text-sm">Messages aren't encrypted yet. Turn it on from the Chat tab.</p>
+        ) : e2e.unlocked ? (
+          <>
+            <p className="text-sm">Messages are end-to-end encrypted, and this device is unlocked.</p>
+            <Button
+              variant="secondary"
+              className="w-full"
+              icon={<Lock />}
+              onClick={() => actions.lockDevice().then(() => toast('Locked on this device'), toastError)}
+            >
+              Lock this device
+            </Button>
+            <p className="text-xs text-muted">
+              Forgets the key here. You'll need the passphrase again to read or send messages on this device. Signing out does
+              this too.
+            </p>
+          </>
+        ) : (
+          <p className="text-sm">Messages are end-to-end encrypted. This device is locked: unlock it from the Chat tab.</p>
+        )}
+      </Section>
+
       {!isStandalone() && (
         <Section title="Put it on your home screen">
           {install ? (
@@ -100,7 +124,7 @@ function SettingsBody() {
         <p className="text-sm">
           Signed in as <span className="font-medium">{user.email}</span>
         </p>
-        <Button variant="secondary" className="w-full" icon={<LogOut />} onClick={() => supabase.auth.signOut()}>
+        <Button variant="secondary" className="w-full" icon={<LogOut />} onClick={() => signOut()}>
           Sign out
         </Button>
       </Section>

@@ -8,7 +8,7 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react'
-import { ArrowUp, ContactRound, Copy, Download, MessageCircleHeart, NotebookPen, Plus, Trash } from 'lucide-react'
+import { ArrowUp, ContactRound, Copy, Download, Lock, MessageCircleHeart, NotebookPen, Plus, Trash } from 'lucide-react'
 import { time, useSpace } from '../lib/store'
 import { toCard, type Contact, type Message } from '../lib/types'
 import { downloadVCard, type ContactCard } from '../lib/vcard'
@@ -18,6 +18,7 @@ import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, cx, toast, toa
 import { ContactPicker, findExisting } from './contacts'
 import { InviteCode } from './space-setup'
 import { useNav } from './nav'
+import { EncryptionPanel } from './encryption'
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
@@ -36,7 +37,7 @@ function dayLabel(iso: string) {
 const GROUP_GAP_MS = 3 * 60_000
 
 export function ChatTab({ active }: { active: boolean }) {
-  const { messages, userId, partner, space, actions } = useSpace()
+  const { messages, userId, partner, space, actions, e2e } = useSpace()
   const scroller = useRef<HTMLDivElement>(null)
   const atBottom = useRef(true)
   const [menuFor, setMenuFor] = useState<Message | null>(null)
@@ -81,10 +82,15 @@ export function ChatTab({ active }: { active: boolean }) {
             <InviteCode code={space.invite_code} />
           </div>
         )}
+        {e2e.enabled && messages.length > 0 && (
+          <div className="mt-2 mb-1 flex items-center justify-center gap-1 text-xs text-muted">
+            <Lock className="size-3" /> End-to-end encrypted
+          </div>
+        )}
         {messages.length === 0 ? (
           <EmptyState icon={<MessageCircleHeart />} title="Just the two of you">
-            Messages here are only visible to you and {partner?.display_name ?? 'your person'}. Tap{' '}
-            <ContactRound className="inline size-4 align-text-bottom" /> to send a contact.
+            {e2e.enabled ? 'End-to-end encrypted: only your two phones can read these messages.' : 'Only you and ' + (partner?.display_name ?? 'your person') + ' can see this chat.'}{' '}
+            Tap <ContactRound className="inline size-4 align-text-bottom" /> to send a contact.
           </EmptyState>
         ) : (
           messages.map((m, i) => {
@@ -104,7 +110,11 @@ export function ChatTab({ active }: { active: boolean }) {
         )}
       </div>
 
-      <Composer onSend={(body) => send({ body })} onAttach={() => setPicking(true)} onTyping={actions.typing} />
+      {!e2e.ready ? null : e2e.enabled && e2e.unlocked ? (
+        <Composer onSend={(body) => send({ body })} onAttach={() => setPicking(true)} onTyping={actions.typing} />
+      ) : (
+        <EncryptionPanel />
+      )}
 
       <MessageMenu message={menuFor} mine={menuFor?.sender_id === userId} onClose={() => setMenuFor(null)} />
 
@@ -199,7 +209,19 @@ function Bubble({
   )
 
   let content
-  if (m.contact) {
+  if (m.locked || m.undecryptable) {
+    content = (
+      <div
+        className={cx(
+          'rounded-[1.25rem] border border-dashed border-line px-3.5 py-2 text-sm text-muted italic',
+          mine ? 'rounded-br-md' : 'rounded-bl-md',
+        )}
+      >
+        {m.undecryptable ? "Couldn't decrypt this message" : 'Locked: unlock to read'}
+        {stamp}
+      </div>
+    )
+  } else if (m.contact) {
     content = <ContactBubble card={m.contact} mine={mine} stamp={stamp} />
   } else if (m.body && EMOJI_ONLY.test(m.body.trim())) {
     content = (
@@ -303,7 +325,7 @@ function MessageMenu({ message, mine, onClose }: { message: Message | null; mine
                 icon={<NotebookPen />}
                 onClick={run(() => actions.addNote({ title: '', body: m.body!, pinned: false }), 'Saved to Notes')}
               >
-                Save as a note
+                Save as a note <span className="text-xs font-normal text-muted">(notes aren't encrypted)</span>
               </MenuItem>
             </>
           )}

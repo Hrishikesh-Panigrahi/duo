@@ -7,6 +7,8 @@ import { must, supabase } from './supabase'
 import { errorMessage } from '../components/ui'
 import { toCard, type Contact, type ContactInput, type List, type ListItem, type Member, type Message, type Note, type Space } from './types'
 import type { ContactCard } from './vcard'
+import { decryptMessage, deriveKey, encryptMessage, keyMatches, makeCheck, newSalt, type MessageContent } from './e2e'
+import { keystore } from './keystore'
 
 type Rows = {
   contacts: Contact[]
@@ -100,6 +102,62 @@ function useSpaceStore(spaceId: string, user: User) {
   const [partnerTyping, setPartnerTyping] = useState(false)
   const channelRef = useRef<RealtimeChannel | null>(null)
   const lastTypingSent = useRef(0)
+
+  // End-to-end encryption: this device's key for the space (null = locked),
+  // and the plaintext of every message it has decrypted, by message id.
+  const [e2eKey, setE2eKey] = useState<CryptoKey | null>(null)
+  const [keyLoaded, setKeyLoaded] = useState(false)
+  const [plain, setPlain] = useState<Record<string, MessageContent | 'failed'>>({})
+  const keyRef = useRef(e2eKey)
+  keyRef.current = e2eKey
+  const spaceRef = useRef(space)
+  spaceRef.current = space
+
+  useEffect(() => {
+    let alive = true
+    keystore
+      .get(spaceId)
+      .then((k) => {
+        if (alive && k) setE2eKey(k)
+      })
+      .catch(() => {}) // no IndexedDB: the passphrase is asked for each session
+      .finally(() => alive && setKeyLoaded(true))
+    return () => {
+      alive = false
+    }
+  }, [spaceId])
+
+  // A key saved on this device that no longer matches the space is useless; forget it.
+  useEffect(() => {
+    if (!e2eKey || !space?.e2e_check) return
+    void keyMatches(e2eKey, spaceId, space.e2e_check).then((ok) => {
+      if (ok) return
+      setE2eKey(null)
+      void keystore.remove(spaceId).catch(() => {})
+    })
+  }, [e2eKey, space?.e2e_check, spaceId])
+
+  // Decrypt whatever arrived that we haven't read yet.
+  useEffect(() => {
+    if (!e2eKey) return
+    const todo = rows.messages.filter((m) => m.cipher && !(m.id in plain))
+    if (!todo.length) return
+    let alive = true
+    void Promise.all(
+      todo.map(async (m) => {
+        try {
+          return [m.id, await decryptMessage(e2eKey, { spaceId, senderId: m.sender_id, messageId: m.id }, m.cipher!)] as const
+        } catch {
+          return [m.id, 'failed' as const] as const
+        }
+      }),
+    ).then((results) => {
+      if (alive) setPlain((p) => ({ ...p, ...Object.fromEntries(results) }))
+    })
+    return () => {
+      alive = false
+    }
+  }, [rows.messages, e2eKey, plain, spaceId])
 
   useEffect(() => {
     let alive = true
@@ -252,22 +310,29 @@ function useSpaceStore(spaceId: string, user: User) {
 
     return {
       async sendMessage(input: { body?: string; contact?: ContactCard }) {
-        const tempId = `tmp-${Date.now()}-${Math.random().toString(36).slice(2)}`
-        const values = { body: input.body?.trim() || null, contact: input.contact ? toCard(input.contact) : null }
+        const key = keyRef.current
+        if (!key) throw new Error('Unlock encryption in Chat before sending.')
+        // The id is chosen here so it can be sealed into the ciphertext.
+        const id = crypto.randomUUID()
+        const content: MessageContent = { body: input.body?.trim() || null, contact: input.contact ? toCard(input.contact) : null }
+        const cipher = await encryptMessage(key, { spaceId, senderId: userId, messageId: id }, content)
+        setPlain((p) => ({ ...p, [id]: content }))
         const temp: Message = {
-          id: tempId,
+          id,
           space_id: spaceId,
           sender_id: userId,
           created_at: new Date().toISOString(),
           pending: true,
-          ...values,
+          body: null,
+          contact: null,
+          cipher,
         }
         upsert('messages', temp)
         try {
-          const row = await must<Message>(supabase.from('messages').insert({ ...values, space_id: spaceId }).select().single())
-          dispatch({ type: 'confirm', table: 'messages', tempId, row })
+          const row = await must<Message>(supabase.from('messages').insert({ id, space_id: spaceId, cipher }).select().single())
+          dispatch({ type: 'confirm', table: 'messages', tempId: id, row })
         } catch (e) {
-          remove('messages', tempId)
+          remove('messages', id)
           throw e
         }
       },
@@ -313,6 +378,34 @@ function useSpaceStore(spaceId: string, user: User) {
         setMembers((ms) => ms.map((m) => (m.user_id === userId ? { ...m, display_name } : m)))
       },
 
+      /** Turns on end-to-end encryption for the space, with a passphrase you both know. */
+      async setUpEncryption(passphrase: string) {
+        const salt = newSalt()
+        const key = await deriveKey(passphrase, salt)
+        const check = await makeCheck(key, spaceId)
+        await must(supabase.rpc('enable_e2e', { salt, check_value: check }))
+        setSpace((s) => s && { ...s, e2e_salt: salt, e2e_check: check })
+        await keystore.set(spaceId, key).catch(() => {})
+        setE2eKey(key)
+      },
+
+      /** Unlocks this device with the passphrase. Throws if it's not the right one. */
+      async unlockEncryption(passphrase: string) {
+        const s = spaceRef.current
+        if (!s?.e2e_salt || !s.e2e_check) throw new Error('Encryption is not set up yet.')
+        const key = await deriveKey(passphrase, s.e2e_salt)
+        if (!(await keyMatches(key, spaceId, s.e2e_check))) throw new Error('That passphrase does not match.')
+        await keystore.set(spaceId, key).catch(() => {})
+        setE2eKey(key)
+      },
+
+      /** Forgets the key on this device; messages stay encrypted until it's unlocked again. */
+      async lockDevice() {
+        await keystore.remove(spaceId).catch(() => {})
+        setE2eKey(null)
+        setPlain({})
+      },
+
       /** Throttled "is typing" ping to the other person. */
       typing() {
         const now = Date.now()
@@ -325,6 +418,19 @@ function useSpaceStore(spaceId: string, user: User) {
 
   const me = members.find((m) => m.user_id === userId) ?? null
   const partner = members.find((m) => m.user_id !== userId) ?? null
+
+  // Messages as the app shows them: encrypted ones with their plaintext filled in.
+  const messages = useMemo(
+    () =>
+      rows.messages.map((m): Message => {
+        if (!m.cipher) return m
+        const p = plain[m.id]
+        if (p === 'failed') return { ...m, undecryptable: true }
+        if (!p) return { ...m, locked: true }
+        return { ...m, ...p }
+      }),
+    [rows.messages, plain],
+  )
 
   return {
     user,
@@ -339,6 +445,15 @@ function useSpaceStore(spaceId: string, user: User) {
     partnerOnline: partnerOnline && partner !== null,
     partnerTyping,
     ...rows,
+    messages,
+    e2e: {
+      /** Turned on for the space; once on, it stays on. */
+      enabled: Boolean(space?.e2e_salt),
+      /** This device has the key. */
+      unlocked: e2eKey !== null,
+      /** Done checking this device for a saved key. */
+      ready: keyLoaded,
+    },
     actions,
   }
 }
