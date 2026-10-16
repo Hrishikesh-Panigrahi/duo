@@ -74,9 +74,10 @@ its real security headers.
 3. **App.** `npm run build` produces a static site in `dist/`. Host it on any static host with HTTPS
    (Cloudflare Pages, Netlify, Vercel, GitHub Pages). Set `VITE_SUPABASE_URL` and `VITE_SUPABASE_PUBLISHABLE_KEY`
    as build-time environment variables there. HTTPS is required for installing it as an app.
-4. **Join.** One of you signs up, taps *Start our space*, and picks the shared passphrase; the app then shows an
-   invite code. The other signs up, enters the code, then the passphrase. The code stops working once the second
-   person is in.
+4. **Join.** One of you signs up, taps *Start our space*, and picks the shared passphrase; the app then offers an
+   invite link (and the code inside it). The other opens the link, signs up, and is in the space straight away; then
+   they enter the passphrase you've told them in person. The link carries only the code, after the `#` so it never
+   reaches a server, and it stops working once the second person is in.
 5. **Lock it down.** Once you've both joined, turn off **Allow new users to sign up** in Supabase. Strangers
    couldn't see your data anyway, but there's no reason to let anyone create accounts. Also turn on two-factor
    sign-in for your Supabase, Cloudflare and GitHub accounts: whoever controls those controls the app's code.

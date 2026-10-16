@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from 'react'
 import type { Session } from '@supabase/supabase-js'
 import { supabase } from '../lib/supabase'
+import { pendingInvite } from '../lib/invite'
 import { Button, Field, Input, errorMessage, toast } from '../components/ui'
 
 /** undefined while restoring the saved session, null when signed out. */
@@ -33,7 +34,8 @@ export function AuthLayout({ children, subtitle }: { children: ReactNode; subtit
 }
 
 export function AuthScreen() {
-  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>('signin')
+  const [invited] = useState(() => pendingInvite.get() !== null)
+  const [mode, setMode] = useState<'signin' | 'signup' | 'forgot'>(invited ? 'signup' : 'signin')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
@@ -79,7 +81,12 @@ export function AuthScreen() {
   }
 
   return (
-    <AuthLayout>
+    <AuthLayout subtitle={invited ? "You've been invited to a space." : undefined}>
+      {invited && (
+        <p className="mb-5 rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm">
+          Create an account (or sign in) and you'll join it straight away. You'll need the passphrase your person tells you.
+        </p>
+      )}
       <form onSubmit={submit} className="space-y-4">
         <Field label="Email">
           <Input type="email" autoComplete="email" required value={email} onChange={(e) => setEmail(e.target.value)} />

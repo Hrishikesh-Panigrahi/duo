@@ -80,7 +80,7 @@ export function ChatTab({ active }: { active: boolean }) {
       >
         {!partner && space?.invite_code && (
           <div className="mx-auto my-4 max-w-sm rounded-2xl border border-line bg-surface p-4">
-            <p className="mb-3 text-center text-sm">Your person hasn't joined yet. Send them this code:</p>
+            <p className="mb-3 text-center text-sm">Your person hasn't joined yet. Send them the invite link:</p>
             <InviteCode code={space.invite_code} />
           </div>
         )}
@@ -144,6 +144,35 @@ export function ChatTab({ active }: { active: boolean }) {
   )
 }
 
+/**
+ * The menu opens while the finger is still down, so whatever the browser does
+ * with that press next lands on the menu now under it: its own long-press
+ * (selecting a word, a callout) or, when the finger lifts, a click on the
+ * backdrop that would close the menu straight away. Hold all of that off
+ * until just after the finger lifts.
+ */
+function holdOffNativeLongPress() {
+  const types = ['selectstart', 'contextmenu', 'click']
+  const block = (e: Event) => {
+    e.preventDefault()
+    e.stopPropagation()
+  }
+  const opts = { capture: true }
+  for (const type of types) document.addEventListener(type, block, opts)
+  let done = false
+  const release = () => {
+    if (done) return
+    done = true
+    for (const type of types) document.removeEventListener(type, block, opts)
+    window.getSelection()?.removeAllRanges()
+  }
+  // The click from lifting the finger arrives right after it; a real tap on
+  // the menu comes much later than this.
+  const later = () => setTimeout(release, 400)
+  for (const type of ['pointerup', 'pointercancel', 'touchend', 'touchcancel']) window.addEventListener(type, later, { once: true, capture: true })
+  setTimeout(release, 3000) // in case the finger-up never arrives
+}
+
 /** Long-press on touch, right-click on desktop. */
 function useLongPress(onLongPress: () => void, ms = 450) {
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
@@ -153,10 +182,11 @@ function useLongPress(onLongPress: () => void, ms = 450) {
     clearTimeout(timer.current)
     origin.current = null
   }
-  const fire = () => {
+  const fire = (byTouch: boolean) => {
     if (fired.current) return
     fired.current = true
     navigator.vibrate?.(10)
+    if (byTouch) holdOffNativeLongPress()
     onLongPress()
   }
   return {
@@ -164,7 +194,8 @@ function useLongPress(onLongPress: () => void, ms = 450) {
       if (e.button !== 0) return
       fired.current = false
       origin.current = { x: e.clientX, y: e.clientY }
-      timer.current = setTimeout(fire, ms)
+      const byTouch = e.pointerType !== 'mouse'
+      timer.current = setTimeout(() => fire(byTouch), ms)
     },
     onPointerMove: (e: ReactPointerEvent) => {
       if (origin.current && Math.hypot(e.clientX - origin.current.x, e.clientY - origin.current.y) > 10) cancel()
@@ -175,7 +206,7 @@ function useLongPress(onLongPress: () => void, ms = 450) {
     onContextMenu: (e: ReactMouseEvent) => {
       e.preventDefault()
       cancel()
-      fire()
+      fire(false)
     },
     // A long-press shouldn't also follow a link inside the bubble.
     onClickCapture: (e: ReactMouseEvent) => {
