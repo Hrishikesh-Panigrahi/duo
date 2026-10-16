@@ -1,6 +1,9 @@
-"""Breaks each security check on purpose, one at a time, and checks a test notices. Always restores the file.
+"""Breaks each check listed in MUTANTS on purpose, one at a time, and checks a test notices.
+Always puts the file back byte for byte.
 
-Usage: python scripts/mutate.py   (every line should say CAUGHT)
+Usage: python scripts/mutate.py
+Each mutant should say CAUGHT with a failing vitest line (starting with the multiplication sign) under it.
+CAUGHT only means vitest exited non-zero.
 """
 import pathlib
 import subprocess
@@ -22,7 +25,7 @@ MUTANTS = [
      'encryptRecord(key, contexts.signal(this.o.spaceId),', "encryptRecord(key, contexts.signal('x'),", ROOM_T),
     ('oversized signals decrypted', ROOM, "sealed.length > 64_000", 'sealed.length > 64_000_000', ROOM_T),
     ('rejoin never backs off', ROOM, '1_000 * 2 ** this.rejoins++', '1_000', ROOM_T),
-    ('unencrypted rows shown after locking', VIEW,
+    ('unencrypted rows shown once the space is encrypted', VIEW,
      'if (!cipher) return this.encrypted ? null : fallback()', 'if (!cipher) return fallback()', VIEW_T),
     ('more bytes than promised accepted', DIRECT, "    if (this.received > this.header.size) return 'invalid'\n", '', DIRECT_T),
     ('text accepted as file bytes', DIRECT, "    if (!(data instanceof ArrayBuffer)) return 'invalid'\n", '', DIRECT_T),
@@ -38,10 +41,14 @@ MUTANTS = [
 missed = 0
 for name, path, old, new, test in MUTANTS:
     f = ROOT / path
-    original = f.read_text(encoding='utf-8')
+    raw = f.read_bytes()
+    # Anchors use \n; a CRLF checkout is matched as LF and mutated back to CRLF.
+    crlf = b'\r\n' in raw
+    original = raw.decode('utf-8').replace('\r\n', '\n')
     assert original.count(old) == 1, f'{name}: anchor not found exactly once in {path}'
+    mutated = original.replace(old, new)
     try:
-        f.write_text(original.replace(old, new), encoding='utf-8', newline='\n')
+        f.write_bytes((mutated.replace('\n', '\r\n') if crlf else mutated).encode('utf-8'))
         res = subprocess.run(f'npx vitest run {test}', cwd=ROOT, shell=True, capture_output=True, text=True, encoding='utf-8', errors='replace')
         failed = [line.strip() for line in (res.stdout + res.stderr).splitlines() if line.strip().startswith('×')]
         missed += res.returncode == 0
@@ -49,6 +56,6 @@ for name, path, old, new, test in MUTANTS:
         for line in failed:
             print('         ', line[:110])
     finally:
-        f.write_text(original, encoding='utf-8', newline='\n')
+        f.write_bytes(raw)
 
 sys.exit(1 if missed else 0)

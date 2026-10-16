@@ -9,14 +9,16 @@ paths:
 
 # Build, headers and the installable app
 
-- The CSP and security headers live in `vite.config.ts`. They're written to `dist/_headers` for Cloudflare Pages,
-  and `npm run preview` serves them too.
-- Don't weaken the CSP: no `'unsafe-inline'`, no `'unsafe-eval'`, no new origins. `connect-src` is only the app and
-  its own Supabase project.
-- Keep `build.sourcemap: false`.
-- No third-party scripts, fonts, analytics or CDNs. Everything is bundled.
-- The service worker precaches the app shell only (`globPatterns`). Never cache API responses, media or anything
-  a person shared.
-- Dependencies: install through the configured registry. On a 401 or 403, stop and ask. Keep
-  `package-lock.json` free of registry URLs (the repo's `.npmrc` sees to that).
-- After changing headers, check them on the branch preview (`<branch>.our-duo.pages.dev`) before merging.
+- **Where the headers live:** the CSP and security headers are in `vite.config.ts`. They're written to
+  `dist/_headers` during `vite build` (Cloudflare Pages applies that file), and `npm run preview` sends them too.
+  `npm run dev` sends none.
+- **The CSP:** don't weaken it. No `'unsafe-inline'`, no `'unsafe-eval'`, no new origins. `connect-src` is only the
+  app and its own Supabase project.
+- **Third parties:** the only outside service the app contacts is Cloudflare's STUN server (`direct.ts`), which the
+  CSP doesn't govern. Don't add scripts, fonts, analytics or CDNs; everything is bundled.
+- **Source maps:** keep `build.sourcemap: false`.
+- **The service worker:** it precaches the built files that match `globPatterns`, and there's no `runtimeCaching`.
+  That's what keeps API responses and media out of the cache. Don't add runtime caching for anything a person shared.
+- **Lockfile:** keep registry URLs out of `package-lock.json` (the repo's `.npmrc` sets
+  `omit-lockfile-registry-resolved`).
+- **Before merging a header change:** check the headers on the Cloudflare branch preview.

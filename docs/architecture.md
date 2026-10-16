@@ -2,81 +2,139 @@
 
 ## The shape of it
 
-Duo is a static PWA. All logic runs on the phone; Supabase stores ciphertext and enforces who may touch it.
+Duo is a static PWA. Encryption and nearly all app logic run on the phone. Supabase stores the ciphertext and
+plaintext metadata (ids, who wrote what, timestamps, media flags), enforces access, and runs a few SQL functions:
+creating and joining a space, `enable_e2e`, swapping legacy messages, and marking media opened.
 
 ```
 phone A ──HTTPS/WSS──▶ Supabase (Postgres + RLS, Auth, Storage, Realtime) ◀──HTTPS/WSS── phone B
    └──────────────── WebRTC data channel (direct photos and videos) ─────────────────────┘
-                     (set up over the private Realtime room; STUN only, no relay)
+          (set up over the private Realtime room; STUN at stun.cloudflare.com, no relay)
 ```
 
-- **Hosting:** Cloudflare Pages project `our-duo` builds `main` (`npm run build` → `dist/`). Every branch also
-  gets a preview at `<branch>.our-duo.pages.dev`, pointed at the live database.
-- **Database:** Supabase project `duo` (Mumbai, Free plan). Migrations are pasted into the SQL editor in filename
-  order. Locally, `npx supabase start` applies them for you.
+**Deployment** (configured outside this repo): Cloudflare Pages builds `main` with `npm run build` and serves
+`dist/`, applying `dist/_headers`. The Supabase project's migrations are applied by running each file in
+`supabase/migrations/` in order: in the SQL editor, or with `supabase db push`. Locally, `npx supabase start`
+applies them.
 
-## Data flow inside the app
+## Who reads what
 
-`useSpace()` in [src/lib/store.tsx](../src/lib/store.tsx) is the only thing screens read. It wires together:
+Inside a space, screens get data and actions from `useSpace()` ([src/lib/store.tsx](../src/lib/store.tsx)), except
+sign-out, which goes through `signOut()` in `src/lib/session.ts`. Before a space exists, a few places call Supabase
+directly:
+- sign-in and password reset (`auth.tsx`);
+- creating or joining a space (`space-setup.tsx`);
+- finding the user's space (`App.tsx`).
 
-| Module (`src/lib/space/`) | Job |
+`SpaceProvider` (through `useSpaceStore`) wires together these modules from `src/lib/space/`, and `useSpace()` reads
+the result. `shapes.ts` is used by `view.ts`.
+
+| Module | Job |
 | --- | --- |
-| `rows.ts` | The rows exactly as stored (ciphertext), and a reducer for changes. `MESSAGE_LIMIT` is 500. |
-| `sync.ts` | `SpaceSync`: first load, then Realtime `postgres_changes` for every table. Reloads on every (re)subscribe. |
-| `device-key.ts` | This device's `CryptoKey` for the space, from IndexedDB `duo-keys`, checked against `spaces.e2e_check`. |
+| `rows.ts` | Rows as stored (ciphertext, or plaintext legacy columns), plus messages still being sent. The reducer, `MESSAGE_LIMIT` (500), and the `CLEARED` and `legacy` helpers. |
+| `sync.ts` | `SpaceSync`: loads the space, its members, every content table and the newest 500 messages, then follows Realtime `postgres_changes`. Reloads on every (re)subscribe. Drops inserts and updates for other spaces; DELETEs carry no `space_id`, so all are passed on, and an unknown id is a no-op. |
+| `device-key.ts` | This device's `CryptoKey`: from IndexedDB `duo-keys` if saved, otherwise only in memory. Checked against `spaces.e2e_check`. |
 | `plaintext.ts` | A cache of decrypted values, keyed by `context|cipher`, so each ciphertext is opened once. |
-| `view.ts` | `pendingDecryptions` finds what still needs opening. `deriveView` turns rows plus plaintext into what screens show. |
-| `shapes.ts` | Checks a decrypted value has the shape its screen expects. Anything else counts as undecryptable. |
-| `records.ts` | `Records`: the shared ways to seal and write rows. `StoreActions` is the base class for every action group. |
+| `view.ts` | `pendingDecryptions` lists what still needs opening, and checks each result against `shapes`. `deriveView` turns rows and plaintext into what screens show. |
+| `shapes.ts` | The shape each decrypted record must have. Anything else counts as undecryptable. |
+| `records.ts` | `Records`: `seal`, `insertSealed`, `updateSealed`. `StoreActions` is the base class for every action group. |
 | `*-actions.ts` | `useSpace().actions.chat / contacts / notes / lists / names / encryption`. |
 | `room.ts` | `Room`: the private Realtime channel `room:<space id>` for presence, typing and sealed WebRTC signalling. `PresenceGate` throttles presence. |
 
-Writing a row: an action calls `Records.insertSealed` (or `seal` and then update). It encrypts under the
-right `contexts.*` string, remembers the plaintext so the screen updates at once, writes the ciphertext, and
-upserts the stored row. Other devices get the change over Realtime and decrypt it themselves.
+## Writing rows
+
+- **New rows:** `Records.insertSealed` seals the content under the row's `contexts.*` string and remembers the
+  plaintext, so the new row needs no decryption. It then inserts the row, and upserts what the server returns.
+- **Edits:** `Records.updateSealed` upserts the change straight away and rolls it back if the server refuses it.
+- **Messages:** these go through `ChatActions.sendContent` instead. It calls `encryptMessage`, shows a pending row,
+  inserts, then confirms. Message inserts may only set `id, space_id, cipher, has_media, media_direct`; the server
+  sets the sender and the time.
+- **Contact import:** seals each contact and inserts them in batches of 200.
+
+Other devices get each change over Realtime and decrypt it themselves.
 
 ## Encryption
 
 [src/lib/e2e.ts](../src/lib/e2e.ts):
 
-- The passphrase, normalised with NFKC, goes through PBKDF2-SHA256 with 600,000 iterations and the space's random
-  `e2e_salt`. The result is a **non-extractable** AES-256-GCM key, kept in IndexedDB on that device.
-- Text: `v1:<iv>:<ciphertext>`, base64. Files: version byte `1`, a 12-byte IV, then the ciphertext.
-- Every ciphertext is sealed to its **context** (AES-GCM additional data), such as `duo:contact:<space>:<id>`.
+- **The key:** the passphrase is NFKC-normalised and run through PBKDF2-SHA256 (600,000 iterations) with the
+  space's random `e2e_salt`. The result is a non-extractable AES-256-GCM key.
+- **Formats:** text is `v1:<iv>:<ciphertext>` in base64. Files are a version byte `1`, a 12-byte IV, then the
+  ciphertext. There's no padding, so sizes are exact.
+- **Contexts:** each ciphertext is sealed to a context (AES-GCM additional data), such as `duo:contact:<space>:<id>`.
   A ciphertext copied into another row, field or space won't decrypt.
-- `spaces.e2e_check` is a known string sealed under `contexts.check`. It tells a mistyped passphrase apart from the
-  right one without the server learning anything.
-- Turning encryption on (`enable_e2e`) sets the salt once and refuses if it's already set. The device that turns it
-  on upgrades older plaintext rows once. The `duo:upgrade:<space>` flag in local storage tracks that upgrade.
+- **The check value:** `spaces.e2e_check` is a known string sealed under `contexts.check`. It tells a mistyped
+  passphrase from the right one without revealing either. Like any ciphertext, it also lets someone with a copy of
+  the database test passphrase guesses offline. PBKDF2 makes each guess slow, and the strength rules in
+  `passphrase.ts` reject easily guessed passphrases when one is chosen.
+- **Turning it on:** `enable_e2e` sets the salt and check once, and refuses if they're already set.
+- **The one-time upgrade:** the setup form encrypts the space name and this user's name straight after
+  `enable_e2e`. The device that turned encryption on also keeps a `duo:upgrade:<space>` flag in local storage (only
+  in memory if local storage is unavailable). Until `upgradeLegacy` succeeds, it runs each time the main screen
+  opens and re-encrypts:
+  - the loaded contacts, notes, lists and list items;
+  - this user's own loaded messages, each swapped by `encrypt_legacy_message`;
+  - the two names, if they are still plaintext in memory.
+
+  It doesn't upgrade the partner's old messages, or messages older than the newest 500. Those stay plaintext in the
+  database and are hidden from the screens. The partner sets their name again on the name screen.
 
 ## Photos and videos
 
-- `media.ts` shrinks photos (longest edge 1600 px, JPEG 0.82) and checks sizes (45 MB). Only `PLAYABLE_TYPE`
-  types are accepted: images (never SVG) and videos.
-- **Direct:** if the other person is online and can take a direct transfer, `DirectLink` opens a WebRTC data
-  channel. The offer, answer and ICE candidates are sealed with `contexts.signal`. The encrypted file goes over
-  in 16 KB chunks. `FileAssembler` refuses a bad header, a chunk that isn't binary, or more bytes than the header
-  promised. The receiver keeps the file, still encrypted, in IndexedDB `duo-inbox` until it's opened.
-- **Stored:** otherwise, the encrypted file goes to the private Storage bucket `media` at `<space id>/<message id>`
-  (served as raw bytes only). It's deleted once opened (`mark_media_opened`) or after 3 days.
+- **Preparing:** `media.ts` only accepts `PLAYABLE_TYPE` files: images other than SVG, and videos. Photos are
+  re-encoded as JPEG at quality 0.82, scaled down so the longest edge is at most 1600 px (never up). Videos, and photos the browser can't redraw, are
+  sent as they are, up to 45 MiB.
+- **Direct:** `ChatActions` sends a file through `Room` and `DirectLink` when the partner's presence says `direct`
+  (app open, unlocked, WebRTC available). If that fails, it uses Storage instead.
+  - The offer, answer and ICE candidates are sealed with `contexts.signal`.
+  - The encrypted file goes in 16 KiB chunks.
+  - `FileAssembler` refuses a bad header (a message id that isn't a UUID, or a size that isn't a whole number from 1 byte to 50 MiB), a chunk that isn't binary, and more bytes than
+    the header promised.
+  - The receiver keeps the file, still encrypted, in IndexedDB `duo-inbox`. It's removed when opened, at the next
+    sweep after it expires, when its message is deleted, or on sign-out.
+- **Stored:** otherwise the encrypted file is uploaded to the private Storage bucket `media` at
+  `<space id>/<message id>`, declared as `application/octet-stream`.
+- **Opening:** the receiver decrypts the file. The blob gets the sender's type only if it matches `PLAYABLE_TYPE`,
+  otherwise `application/octet-stream`.
+- **Deleting:** when the recipient opens a file, `finishMedia` deletes it, then calls `mark_media_opened`. Each
+  time the main screen opens (`ShellReady` mounts), `sweepMedia` also removes files whose loaded message was opened
+  or is more than 3 days old.
+  - A Storage file with no loaded message is removed once the file itself is more than 3 days old. Only the first
+    1000 files are listed.
+  - An inbox file with no loaded message is removed once it's more than 3 days old, or more than 10 minutes old and
+    newer than the oldest loaded message.
+
+  Nothing on the server deletes or expires files, and the read policy doesn't check age.
 
 ## Database
 
 [supabase/migrations/](../supabase/migrations/), in order:
 
-1. `init`: spaces, members (two at most, joined by invite code), contacts, messages, notes, lists, list items.
-   RLS starts by revoking everything, then grants exactly what the app uses. `is_member` is a `security definer`
-   helper so policies don't recurse.
-2. `e2e_messages`: `e2e_salt` / `e2e_check`, `enable_e2e`, and ciphertext-only messages.
-3. `e2e_everything`: a `cipher` column and ciphertext-only check on every content table and on names.
-   `encrypt_legacy_message`, view-once media, the `media` bucket and its policies (`can_access_media`).
-4. `direct_media`: records which way a file went, the members-only Realtime room policies, a fix for encrypting
-   older spaces, and least-privilege grants on helpers.
+1. **`init`:**
+   - Tables: spaces, members (at most two, joined by invite code), contacts, messages, notes, lists, list items.
+   - RLS is enabled on all of them.
+   - All table privileges are revoked from `anon` and `authenticated`, then only what the app uses is granted back.
+   - Members-only policies use `is_member`, a `security definer` helper so policies don't recurse.
+2. **`e2e_messages`:** `e2e_salt` and `e2e_check`, `enable_e2e`, and the ciphertext-only check on messages.
+3. **`e2e_everything`:**
+   - `cipher` columns and ciphertext-only checks on contacts, notes, lists and list items.
+   - `name_cipher` / `display_name_cipher`, with checks that the plaintext name is null.
+   - Name-less `create_space()` and `join_space(code)`.
+   - `encrypt_legacy_message`, view-once media, the `media` bucket and its policies (`can_access_media`).
+4. **`direct_media`:**
+   - `media_direct`.
+   - Message inserts limited to five columns.
+   - The members-only room policies (`can_use_room`).
+   - `enable_e2e` and `join_space` now clear an older space's plaintext name.
+   - `is_member` and `can_access_media` executable by signed-in users only.
 
-The ciphertext-only checks are `NOT VALID`: they apply to every new insert or update, but leave rows from before
-encryption alone so the app can upgrade them in place.
+All the ciphertext-only checks are `NOT VALID`: every new insert or update must pass, but rows from before
+encryption are left alone. Content rows are upgraded in place. Messages can't be updated, so they're swapped for
+an encrypted copy instead.
 
-## Sign-out and locking
+## Locking and sign-out
 
-`signOut()` clears `duo-keys` and `duo-inbox` before signing out. Locking forgets the key and the plaintext
-cache, so the screens empty at once.
+- **Locking** ("Lock this device" in Settings) deletes this device's saved key, clears the key from memory and drops
+  the plaintext cache. The app then shows the unlock screen.
+- **Sign out** through the app runs `signOut()`, which clears `duo-keys` and `duo-inbox` and then ends the session.
+  A session that ends any other way, such as expiring, clears nothing.

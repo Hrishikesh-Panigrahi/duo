@@ -1,9 +1,9 @@
-// Measures the code against the style rules in CLAUDE.md.
+// Measures src/**/*.ts(x) and vite.config.ts against the style rules in CLAUDE.md.
 // Usage: node scripts/audit-style.cjs [projectDir] [--all]
 const fs = require('fs')
 const path = require('path')
 const root = path.resolve(process.argv[2] && !process.argv[2].startsWith('--') ? process.argv[2] : '.')
-// Comes with the build tooling, so it's already in node_modules.
+// Not in package.json: it's in node_modules via vite-plugin-pwa → workbox-build → @babel/core.
 const { parse } = require(path.join(root, 'node_modules/@babel/parser'))
 const MAX = 29
 
