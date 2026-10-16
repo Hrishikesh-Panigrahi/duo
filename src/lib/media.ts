@@ -5,7 +5,7 @@ import type { MediaInfo } from './types'
 /** Leaves headroom under the Free plan's 50 MB per-file limit for encryption overhead. */
 export const MAX_MEDIA_BYTES = 45 * 1024 * 1024
 /** Unopened photos and videos are deleted after this long. */
-export const MEDIA_TTL_DAYS = 14
+export const MEDIA_TTL_DAYS = 3
 const MAX_IMAGE_EDGE = 1600
 const JPEG_QUALITY = 0.82
 

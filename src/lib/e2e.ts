@@ -89,6 +89,8 @@ export const contexts = {
   item: (spaceId: string, listId: string, id: string) => `duo:item:${spaceId}:${listId}:${id}`,
   spaceName: (spaceId: string) => `duo:space-name:${spaceId}`,
   memberName: (spaceId: string, userId: string) => `duo:member-name:${spaceId}:${userId}`,
+  /** Messages that set up a direct phone-to-phone connection. */
+  signal: (spaceId: string) => `duo:signal:${spaceId}`,
 }
 
 export function encryptMessage(key: CryptoKey, ids: MessageIds, content: MessageContent): Promise<string> {

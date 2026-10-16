@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
-import { isConfigured, supabase } from './lib/supabase'
+import { isConfigured, serverError, supabase } from './lib/supabase'
 import { SpaceProvider } from './lib/store'
-import { Button, Splash, Toaster } from './components/ui'
+import { Button, Splash, Toaster, errorMessage } from './components/ui'
 import { AuthLayout, AuthScreen, NewPasswordScreen, useAuth } from './features/auth'
 import { SpaceSetup } from './features/space-setup'
 import { Shell } from './features/shell'
@@ -38,7 +38,7 @@ function SpaceGate({ user }: { user: User }) {
       .maybeSingle()
       .then(({ data, error }) => {
         if (!alive) return
-        if (error) setError(error.message)
+        if (error) setError(errorMessage(serverError(error)))
         else setSpaceId(data?.space_id ?? null)
       })
     return () => {

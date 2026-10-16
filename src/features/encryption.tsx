@@ -1,7 +1,8 @@
 import { useState, type FormEvent } from 'react'
-import { Lock } from 'lucide-react'
+import { Lock, Sparkles } from 'lucide-react'
 import { useSpace } from '../lib/store'
-import { MIN_PASSPHRASE_LENGTH, cryptoAvailable } from '../lib/e2e'
+import { cryptoAvailable } from '../lib/e2e'
+import { passphraseProblem, suggestPassphrase } from '../lib/passphrase'
 import { signOut } from '../lib/session'
 import { Button, Field, Input, errorMessage } from '../components/ui'
 import { AuthLayout } from './auth'
@@ -36,10 +37,27 @@ function PassphraseInputs({
           <Input {...common} value={again} onChange={(e) => setAgain(e.target.value)} />
         </Field>
       )}
-      <label className="flex items-center gap-2 text-sm text-muted">
-        <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} className="size-4 accent-[var(--accent)]" />
-        Show passphrase
-      </label>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="flex items-center gap-2 text-sm text-muted">
+          <input type="checkbox" checked={show} onChange={(e) => setShow(e.target.checked)} className="size-4 accent-[var(--accent)]" />
+          Show passphrase
+        </label>
+        {setAgain && (
+          <button
+            type="button"
+            className="flex items-center gap-1.5 text-sm font-medium text-accent [&_svg]:size-4"
+            onClick={() => {
+              const p = suggestPassphrase()
+              setPassphrase(p)
+              setAgain(p)
+              setShow(true)
+            }}
+          >
+            <Sparkles />
+            Suggest a strong one
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -76,9 +94,8 @@ export function SetUpScreen() {
     e.preventDefault()
     setError(null)
     if (!name.trim()) return setError('Add your name.')
-    if (passphrase.length < MIN_PASSPHRASE_LENGTH) {
-      return setError(`Use at least ${MIN_PASSPHRASE_LENGTH} characters. A short sentence only you two know works well.`)
-    }
+    const weak = passphraseProblem(passphrase)
+    if (weak) return setError(weak)
     if (passphrase !== again) return setError("The two passphrases don't match.")
     setBusy(true)
     try {

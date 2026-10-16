@@ -56,6 +56,8 @@ export type StoredMessage = Stored & {
   contact?: ContactCard | null
   has_media?: boolean
   media_opened_at?: string | null
+  /** Sent straight to the other phone, so there's no copy in Storage. */
+  media_direct?: boolean
   /** Client-only: shown before the server confirms. */
   pending?: boolean
 }
@@ -88,6 +90,7 @@ export type Message = {
   media: MediaInfo | null
   has_media: boolean
   media_opened_at: string | null
+  media_direct: boolean
   pending?: boolean
   /** Encrypted, and this device can't read it yet. */
   locked?: boolean

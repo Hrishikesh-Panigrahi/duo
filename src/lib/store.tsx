@@ -6,9 +6,13 @@
 // Rows are kept exactly as stored (ciphertext plus ids and timestamps), and a
 // cache maps each ciphertext to its plaintext once decrypted. What the screens
 // see is derived from the two.
+//
+// View-once photos and videos go straight to the other phone when both apps
+// are open (see direct.ts); only when that isn't possible do they wait in
+// Storage, encrypted, for up to MEDIA_TTL_DAYS.
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, useState, type ReactNode } from 'react'
 import type { RealtimeChannel, User } from '@supabase/supabase-js'
-import { must, supabase } from './supabase'
+import { must, serverError, supabase } from './supabase'
 import { errorMessage } from '../components/ui'
 import {
   toCard,
@@ -50,6 +54,8 @@ import {
 } from './e2e'
 import { keystore } from './keystore'
 import { isExpired, mediaPath, prepareMedia } from './media'
+import { createDirectLink, directSupported, type DirectLink, type Signal } from './direct'
+import { inbox } from './inbox'
 
 type Rows = {
   contacts: StoredContact[]
@@ -64,6 +70,15 @@ type AnyRow = { id: string; created_at: string }
 const TABLES: Table[] = ['contacts', 'messages', 'notes', 'lists', 'list_items']
 const MESSAGE_LIMIT = 500
 const MEDIA_BUCKET = 'media'
+/** Older signalling messages are ignored, so a recorded one can't be replayed later. */
+const SIGNAL_MAX_AGE_MS = 2 * 60_000
+/** Presence changes allowed per window: one under the server's limit of 5 per 30 seconds. */
+const PRESENCE_WINDOW_MS = 30_000
+const PRESENCE_MAX_PER_WINDOW = 4
+/** A directly delivered file whose message never arrived is dropped after this. */
+const ORPHAN_GRACE_MS = 10 * 60_000
+
+type SealedSignal = { signal: Signal; at: number }
 
 // Realtime channels don't survive hot-swapping this module mid-session, so in
 // dev an edit here reloads the page instead.
@@ -142,6 +157,32 @@ const legacy = {
   item: (r: StoredItem): ItemContent => ({ text: r.text ?? '', done: r.done ?? false, due_date: r.due_date ?? null }),
 }
 
+// Once a space is encrypted, a row without ciphertext can only have been
+// written around the app, by someone with access to the database. Such rows
+// are never shown, and never encrypted as if they were yours.
+//
+// The one exception is the moment encryption is turned on: the device that
+// does it encrypts what was saved before. It notes that on itself (where the
+// server can't), so only it ever does, and it can finish if interrupted.
+const upgradeKey = (spaceId: string) => `duo:upgrade:${spaceId}`
+const upgradeFlag = {
+  get(spaceId: string): boolean {
+    try {
+      return localStorage.getItem(upgradeKey(spaceId)) === '1'
+    } catch {
+      return false
+    }
+  },
+  set(spaceId: string, on: boolean) {
+    try {
+      if (on) localStorage.setItem(upgradeKey(spaceId), '1')
+      else localStorage.removeItem(upgradeKey(spaceId))
+    } catch {
+      // no storage: the upgrade still runs once, right after setup
+    }
+  },
+}
+
 const FAILED = Symbol('decryption failed')
 const cacheKey = (context: string, cipher: string) => `${context}|${cipher}`
 
@@ -175,6 +216,12 @@ function useSpaceStore(spaceId: string, user: User) {
   const [partnerTyping, setPartnerTyping] = useState(false)
   const channelRef = useRef<RealtimeChannel | null>(null)
   const lastTypingSent = useRef(0)
+  const linkRef = useRef<DirectLink | null>(null)
+  /** Your person's app is open, unlocked, and can take a file directly. */
+  const partnerDirectRef = useRef(false)
+  const retrackRef = useRef(() => {})
+  // Set by setUpEncryption on this device only, until upgradeLegacy finishes.
+  const upgradePending = useRef(false)
 
   // This device's key for the space (null = locked), and decrypted plaintext
   // keyed by context + ciphertext.
@@ -265,7 +312,7 @@ function useSpaceStore(spaceId: string, user: User) {
         setReady(true)
         setLoadError(null)
       } catch (e) {
-        console.error('Loading space failed', e)
+        if (import.meta.env.DEV) console.error('Loading space failed', e)
         if (alive) setLoadError(errorMessage(e))
       }
     }
@@ -283,7 +330,9 @@ function useSpaceStore(spaceId: string, user: User) {
       changes.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => {
         if (p.eventType === 'DELETE') {
           const id = (p.old as Partial<AnyRow>).id
-          if (id) dispatch({ type: 'remove', table, id })
+          if (!id) return
+          dispatch({ type: 'remove', table, id })
+          if (table === 'messages') void inbox.remove(id).catch(() => {})
           return
         }
         const row = p.new as AnyRow & { space_id: string; sender_id?: string }
@@ -293,24 +342,83 @@ function useSpaceStore(spaceId: string, user: User) {
       })
     }
     for (const table of ['spaces', 'members']) {
-      changes.on('postgres_changes', { event: '*', schema: 'public', table }, () => void loadMeta().catch(console.error))
+      changes.on('postgres_changes', { event: '*', schema: 'public', table }, () => void loadMeta().catch(() => {}))
     }
     changes.subscribe((status) => {
       if (status === 'SUBSCRIBED') void loadAll() // catches anything that changed while (re)connecting
     })
     void loadAll()
 
-    // Presence and typing need a name both of you share, so wait until any
-    // previous instance of it has fully left before joining again.
+    // Presence, typing and direct-transfer signalling share one room. It needs
+    // a name both of you share, so each join waits until any previous instance
+    // of it has fully left.
+    const roomName = `room:${spaceId}`
     const visible = () => document.visibilityState === 'visible'
     let room: RealtimeChannel | null = null
-    void roomReady(`room:${spaceId}`).then(() => {
+    let subscribed = false
+    let rejoinTimer: ReturnType<typeof setTimeout> | undefined
+    let rejoins = 0
+
+    // Signalling for direct transfers is sealed with the space's key: only
+    // your person's phone can read it or send it.
+    const link = createDirectLink({
+      selfId: userId,
+      async sendSignal(signal) {
+        const key = keyRef.current
+        if (!key || !room || !subscribed) throw new Error('Not connected')
+        const sealed = await encryptRecord(key, contexts.signal(spaceId), { signal, at: Date.now() } satisfies SealedSignal)
+        const res = await room.send({ type: 'broadcast', event: 'signal', payload: { s: sealed } })
+        if (res !== 'ok') throw new Error(`Couldn't reach the other phone (${res})`)
+      },
+      acceptFrom: (id) => id !== userId && rawMembersRef.current.some((m) => m.user_id === id),
+      onFile: (messageId, bytes) => inbox.put(messageId, bytes),
+    })
+    linkRef.current = link
+
+    // "Online" means the app is open in front of you, not just running
+    // somewhere. The server allows each client only a few presence changes
+    // per window (5 per 30 seconds by default) and drops the room past that,
+    // so only real changes are sent, and a burst of them (flicking between
+    // apps) is held back and merged into the latest state.
+    let announced: string | null = null // what the room was last told; null = not there
+    let presenceTimer: ReturnType<typeof setTimeout> | undefined
+    let presenceSent: number[] = []
+    const syncPresence = () => {
+      clearTimeout(presenceTimer)
+      if (!room || !subscribed) return
+      const want = visible() ? JSON.stringify({ direct: directSupported() && keyRef.current !== null }) : null
+      if (want === announced) return
+      const t = Date.now()
+      presenceSent = presenceSent.filter((at) => t - at < PRESENCE_WINDOW_MS)
+      if (presenceSent.length >= PRESENCE_MAX_PER_WINDOW) {
+        presenceTimer = setTimeout(syncPresence, PRESENCE_WINDOW_MS - (t - presenceSent[0]) + 100)
+        return
+      }
+      presenceSent.push(t)
+      announced = want
+      void (want ? room.track(JSON.parse(want) as Record<string, unknown>) : room.untrack())
+    }
+    retrackRef.current = syncPresence
+
+    const partnerGone = () => {
+      setPartnerOnline(false)
+      partnerDirectRef.current = false
+    }
+
+    const openRoom = () => {
       if (!alive) return
-      const r = supabase.channel(`room:${spaceId}`, { config: { presence: { key: userId } } })
+      // Private: the database only lets the two members of this space join it
+      // (see the realtime policies), so nobody else can see who's online or
+      // typing, or even that a connection is being set up.
+      const r = supabase.channel(roomName, { config: { private: true, presence: { key: userId } } })
       room = r
       channelRef.current = r
+      announced = null
+
       r.on('presence', { event: 'sync' }, () => {
-        setPartnerOnline(Object.keys(r.presenceState()).some((key) => key !== userId))
+        const others = Object.entries(r.presenceState<{ direct?: boolean }>()).filter(([key]) => key !== userId)
+        setPartnerOnline(others.length > 0)
+        partnerDirectRef.current = others.some(([, metas]) => metas.some((m) => m.direct === true))
       })
       r.on('broadcast', { event: 'typing' }, ({ payload }) => {
         if (payload?.user_id === userId) return
@@ -318,31 +426,67 @@ function useSpaceStore(spaceId: string, user: User) {
         clearTimeout(typingTimer)
         typingTimer = setTimeout(() => setPartnerTyping(false), 4000)
       })
-      r.subscribe((status) => {
-        if (status === 'SUBSCRIBED' && visible()) void r.track({ at: Date.now() })
+      r.on('broadcast', { event: 'signal' }, ({ payload }) => {
+        const key = keyRef.current
+        const sealed: unknown = payload?.s
+        if (!key || typeof sealed !== 'string' || sealed.length > 64_000) return
+        decryptRecord<SealedSignal>(key, contexts.signal(spaceId), sealed)
+          .then(({ signal, at }) => {
+            // Anything older is a replay of something recorded earlier.
+            if (typeof at === 'number' && Math.abs(Date.now() - at) < SIGNAL_MAX_AGE_MS) link.handleSignal(signal)
+          })
+          .catch(() => {}) // not sealed with this space's key: ignore it
       })
-    })
+      r.subscribe((status) => {
+        if (room !== r) return
+        if (status === 'SUBSCRIBED') {
+          subscribed = true
+          rejoins = 0
+          syncPresence()
+          return
+        }
+        // The server dropped the room (a rate limit, an expired session, a
+        // network change): rejoin, backing off so a persistent problem
+        // doesn't turn into a flood.
+        subscribed = false
+        partnerGone()
+        if (!alive) return
+        room = null
+        channelRef.current = null
+        leaveRoom(r)
+        clearTimeout(rejoinTimer)
+        rejoinTimer = setTimeout(() => void roomReady(roomName).then(openRoom), Math.min(30_000, 1_000 * 2 ** rejoins++))
+      })
+    }
+    void roomReady(roomName).then(openRoom)
 
-    // "Online" means the app is open in front of you, not just running somewhere.
     const onVisibility = () => {
-      if (visible()) {
-        void room?.track({ at: Date.now() })
-        void loadAll()
-      } else {
-        void room?.untrack()
-      }
+      syncPresence()
+      if (visible()) void loadAll()
     }
     document.addEventListener('visibilitychange', onVisibility)
 
     return () => {
       alive = false
       clearTimeout(typingTimer)
+      clearTimeout(presenceTimer)
+      clearTimeout(rejoinTimer)
       document.removeEventListener('visibilitychange', onVisibility)
       channelRef.current = null
+      link.close()
+      linkRef.current = null
+      partnerDirectRef.current = false
+      retrackRef.current = () => {}
       void supabase.removeChannel(changes)
       if (room) leaveRoom(room)
     }
   }, [spaceId, userId])
+
+  // Tell your person whether this device can take files directly right now
+  // (it can't while it's locked).
+  useEffect(() => {
+    retrackRef.current()
+  }, [e2eKey])
 
   // ─── Decryption ──────────────────────────────────────────────────────
 
@@ -388,8 +532,11 @@ function useSpaceStore(spaceId: string, user: User) {
   // What the screens see: rows with their plaintext filled in.
   const view = useMemo(() => {
     let decrypting = false
+    // Before encryption is on there's nothing to protect, so older rows show
+    // as they are (and the setup screen can offer the old names).
+    const encrypted = Boolean(rawSpace?.e2e_salt)
     function read<T>(cipher: string | null | undefined, context: string, fallback: () => T): T | null {
-      if (!cipher) return fallback()
+      if (!cipher) return encrypted ? null : fallback()
       const v = plain.get(cacheKey(context, cipher))
       if (v === undefined) {
         decrypting = true
@@ -428,7 +575,7 @@ function useSpaceStore(spaceId: string, user: User) {
         : []
     })
 
-    const messages: Message[] = rows.messages.map((r) => {
+    const messages: Message[] = rows.messages.flatMap((r): Message[] | Message => {
       const base = {
         id: r.id,
         space_id: r.space_id,
@@ -436,9 +583,10 @@ function useSpaceStore(spaceId: string, user: User) {
         created_at: r.created_at,
         has_media: r.has_media ?? false,
         media_opened_at: r.media_opened_at ?? null,
+        media_direct: r.media_direct ?? false,
         pending: r.pending,
       }
-      if (!r.cipher) return { ...base, body: r.body ?? null, contact: r.contact ?? null, media: null }
+      if (!r.cipher) return encrypted ? [] : { ...base, body: r.body ?? null, contact: r.contact ?? null, media: null }
       const v = plain.get(cacheKey(contexts.message({ spaceId, senderId: r.sender_id, messageId: r.id }), r.cipher))
       if (v === undefined) return { ...base, body: null, contact: null, media: null, locked: true }
       if (v === FAILED) return { ...base, body: null, contact: null, media: null, undecryptable: true }
@@ -455,20 +603,8 @@ function useSpaceStore(spaceId: string, user: User) {
       display_name: read(m.display_name_cipher, contexts.memberName(spaceId, m.user_id), () => m.display_name),
     }))
 
-    // Plaintext rows this device can encrypt. The partner's own name and
-    // messages are theirs to upgrade, on their phone.
-    const mine = rawMembers.find((m) => m.user_id === userId)
-    const legacyRows =
-      rows.contacts.filter((r) => !r.cipher).length +
-      rows.notes.filter((r) => !r.cipher).length +
-      rows.lists.filter((r) => !r.cipher).length +
-      rows.list_items.filter((r) => !r.cipher).length +
-      rows.messages.filter((r) => !r.cipher && r.sender_id === userId && !r.pending).length +
-      (rawSpace && !rawSpace.name_cipher && rawSpace.name !== null ? 1 : 0) +
-      (mine && !mine.display_name_cipher && mine.display_name !== null ? 1 : 0)
-
-    return { contacts, notes, lists, list_items, messages, space, members, decrypting, legacyRows }
-  }, [rows, plain, rawSpace, rawMembers, spaceId, userId])
+    return { contacts, notes, lists, list_items, messages, space, members, decrypting }
+  }, [rows, plain, rawSpace, rawMembers, spaceId])
 
   const viewRef = useRef(view)
   viewRef.current = view
@@ -524,11 +660,14 @@ function useSpaceStore(spaceId: string, user: User) {
       return found
     }
 
-    /** Encrypts and sends a message. `beforeInsert` runs once its id is known (to upload a file). */
+    /**
+     * Encrypts and sends a message. `beforeInsert` runs once its id is known
+     * (to deliver a file) and can add fields to the saved row.
+     */
     async function sendContent(
       content: MessageContent,
       extra: Record<string, unknown> = {},
-      beforeInsert?: (id: string, ids: MessageIds) => Promise<void>,
+      beforeInsert?: (id: string, ids: MessageIds) => Promise<Record<string, unknown>>,
     ) {
       const key = requireKey()
       // The id is chosen here so it can be sealed into the ciphertext.
@@ -539,8 +678,10 @@ function useSpaceStore(spaceId: string, user: User) {
       const temp: StoredMessage = { id, space_id: spaceId, sender_id: userId, created_at: now(), cipher, pending: true, ...extra }
       upsert('messages', temp)
       try {
-        await beforeInsert?.(id, ids)
-        const row = await must<StoredMessage>(supabase.from('messages').insert({ id, space_id: spaceId, cipher, ...extra }).select().single())
+        const more = (await beforeInsert?.(id, ids)) ?? {}
+        const row = await must<StoredMessage>(
+          supabase.from('messages').insert({ id, space_id: spaceId, cipher, ...extra, ...more }).select().single(),
+        )
         dispatch({ type: 'confirm', table: 'messages', tempId: id, row })
       } catch (e) {
         remove('messages', id)
@@ -579,7 +720,12 @@ function useSpaceStore(spaceId: string, user: User) {
         return sendContent({ body: input.body?.trim() || null, contact: input.contact ? toCard(input.contact) : null, media: null })
       },
 
-      /** Sends a view-once photo or video: encrypted here, uploaded, deleted once opened. */
+      /**
+       * Sends a view-once photo or video, encrypted here. If your person's app
+       * is open it goes straight to their phone and is never stored anywhere
+       * else; if not, it waits in Storage (still encrypted) until it's opened
+       * or expires.
+       */
       async sendMedia(file: File) {
         const { bytes, info } = await prepareMedia(file)
         const key = requireKey()
@@ -587,13 +733,24 @@ function useSpaceStore(spaceId: string, user: User) {
         try {
           await sendContent({ body: null, contact: null, media: info }, { has_media: true }, async (id, ids) => {
             const encrypted = await encryptBytes(key, contexts.media(ids), bytes)
+            const partnerId = rawMembersRef.current.find((m) => m.user_id !== userId)?.user_id
+            const link = linkRef.current
+            if (link && partnerId && partnerDirectRef.current && directSupported()) {
+              try {
+                await link.sendFile(partnerId, id, encrypted)
+                return { media_direct: true }
+              } catch (e) {
+                if (import.meta.env.DEV) console.info('Direct delivery failed; using encrypted Storage instead.', e)
+              }
+            }
             const path = mediaPath(spaceId, id)
             const { error } = await media().upload(path, new Blob([encrypted], { type: 'application/octet-stream' }), {
               contentType: 'application/octet-stream',
               upsert: false,
             })
-            if (error) throw new Error(error.message)
+            if (error) throw serverError(error)
             uploaded.path = path
+            return { media_direct: false }
           })
         } catch (e) {
           // Don't leave an encrypted file behind for a message that was never saved.
@@ -602,42 +759,70 @@ function useSpaceStore(spaceId: string, user: User) {
         }
       },
 
-      /** Downloads and decrypts a photo or video; returns a URL that only works on this page. */
+      /** Decrypts a photo or video; returns a URL that only works on this page. */
       async openMedia(m: Message): Promise<string> {
         const key = requireKey()
-        const { data, error } = await media().download(mediaPath(spaceId, m.id))
-        if (error || !data) throw new Error('This was already opened, or it expired.')
+        let encrypted = await inbox.get(m.id).catch(() => undefined)
+        if (!encrypted) {
+          if (m.media_direct) {
+            throw new Error('This was sent straight to another device of yours, so it can only be opened there.')
+          }
+          const { data, error } = await media().download(mediaPath(spaceId, m.id))
+          if (error || !data) throw new Error('This was already opened, or it expired.')
+          encrypted = await data.arrayBuffer()
+        }
         const ids = { spaceId, senderId: m.sender_id, messageId: m.id }
-        const bytes = await decryptBytes(key, contexts.media(ids), await data.arrayBuffer())
+        const bytes = await decryptBytes(key, contexts.media(ids), encrypted)
         return URL.createObjectURL(new Blob([bytes], { type: m.media?.mime ?? 'application/octet-stream' }))
       },
 
-      /** Marks a photo or video opened and deletes its file. */
+      /** Deletes a photo or video's file, wherever it was, and marks it opened. */
       async finishMedia(m: Message) {
+        // Deleting comes first: even if marking it opened fails, there's no second look.
+        await inbox.remove(m.id).catch(() => {})
+        if (!m.media_direct) await media().remove([mediaPath(spaceId, m.id)]).catch(() => {})
         await must(supabase.rpc('mark_media_opened', { message_id: m.id }))
         const row = rowsRef.current.messages.find((r) => r.id === m.id)
         if (row) upsert('messages', { ...row, media_opened_at: now() } as AnyRow)
-        await media().remove([mediaPath(spaceId, m.id)])
       },
 
-      /** Deletes files that were opened or expired, or whose message is gone. */
+      /** Deletes files that were opened or expired, or whose message is gone, in Storage and on this device. */
       async sweepMedia(): Promise<number> {
+        const messages = rowsRef.current.messages
+        const byId = new Map(messages.map((r) => [r.id, r]))
+        const finished = (m: StoredMessage) => Boolean(m.media_opened_at) || isExpired(m.created_at)
+
         const { data } = await media().list(spaceId, { limit: 1000 })
         const stale = (data ?? [])
           .filter((obj) => {
-            const m = rowsRef.current.messages.find((r) => r.id === obj.name)
+            const m = byId.get(obj.name)
             if (!m) return obj.created_at ? isExpired(obj.created_at) : false
-            return Boolean(m.media_opened_at) || isExpired(m.created_at)
+            return finished(m)
           })
           .map((obj) => mediaPath(spaceId, obj.name))
         if (stale.length) await media().remove(stale)
-        return stale.length
+
+        // A message older than everything loaded could still exist, so only
+        // call a delivered file orphaned when its time is covered.
+        const covered = (at: number) => messages.length < MESSAGE_LIMIT || (messages[0] && time(messages[0].created_at) < at)
+        let local = 0
+        for (const e of await inbox.list().catch(() => [])) {
+          const m = byId.get(e.messageId)
+          const gone = m
+            ? finished(m)
+            : isExpired(new Date(e.receivedAt).toISOString()) || (covered(e.receivedAt) && Date.now() - e.receivedAt > ORPHAN_GRACE_MS)
+          if (!gone) continue
+          await inbox.remove(e.messageId).catch(() => {})
+          local++
+        }
+        return stale.length + local
       },
 
       async deleteMessage(id: string) {
         const row = rowsRef.current.messages.find((r) => r.id === id)
         await del('messages', id)
-        if (row?.has_media) await media().remove([mediaPath(spaceId, id)])
+        await inbox.remove(id).catch(() => {})
+        if (row?.has_media && !row.media_direct) await media().remove([mediaPath(spaceId, id)])
       },
 
       // ── Contacts ──
@@ -723,10 +908,19 @@ function useSpaceStore(spaceId: string, user: User) {
       // ── Encryption ──
       /** Turns on end-to-end encryption for the space, with a passphrase you both know. */
       async setUpEncryption(passphrase: string) {
+        upgradePending.current = true
+        upgradeFlag.set(spaceId, true)
         const salt = newSalt()
         const key = await deriveKey(passphrase, salt)
         const check = await makeCheck(key, spaceId)
-        await must(supabase.rpc('enable_e2e', { salt, check_value: check }))
+        try {
+          await must(supabase.rpc('enable_e2e', { salt, check_value: check }))
+        } catch (e) {
+          // Someone else turned it on first, so this device mustn't upgrade anything.
+          upgradePending.current = false
+          upgradeFlag.set(spaceId, false)
+          throw e
+        }
         setRawSpace((s) => s && { ...s, e2e_salt: salt, e2e_check: check })
         await keystore.set(spaceId, key).catch(() => {})
         keyRef.current = key // so actions right after this can use it
@@ -753,12 +947,14 @@ function useSpaceStore(spaceId: string, user: User) {
       },
 
       /**
-       * Encrypts anything saved before encryption was on: the space name, your
-       * own name and messages, and every contact, note and list. Returns how
-       * many rows were upgraded.
+       * Right after this device turns encryption on, encrypts anything saved
+       * before: the space name, your own name and messages, and every contact,
+       * note and list. Does nothing on any other device. Returns how many rows
+       * were upgraded.
        */
       async upgradeLegacy(): Promise<number> {
         const key = requireKey()
+        if (!upgradePending.current && !upgradeFlag.get(spaceId)) return 0
         let count = 0
         const s = rawSpaceRef.current
         if (s && !s.name_cipher && s.name !== null) {
@@ -800,6 +996,8 @@ function useSpaceStore(spaceId: string, user: User) {
           dispatch({ type: 'confirm', table: 'messages', tempId: m.id, row: replacement })
           count++
         }
+        upgradePending.current = false
+        upgradeFlag.set(spaceId, false)
         return count
       },
 
@@ -835,8 +1033,6 @@ function useSpaceStore(spaceId: string, user: User) {
     list_items: view.list_items,
     /** Something this device can read is still being decrypted. */
     decrypting: Boolean(e2eKey) && view.decrypting,
-    /** Rows from before encryption that this device can encrypt. */
-    legacyRows: view.legacyRows,
     e2e: {
       /** Turned on for the space; once on, it stays on. */
       enabled: Boolean(rawSpace?.e2e_salt),

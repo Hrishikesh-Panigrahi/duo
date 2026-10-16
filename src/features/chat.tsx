@@ -15,7 +15,7 @@ import { downloadVCard, type ContactCard } from '../lib/vcard'
 import { todayYMD } from '../lib/dates'
 import { isTouch } from '../lib/device'
 import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, Spinner, cx, errorMessage, toast, toastError } from '../components/ui'
-import { MAX_MEDIA_BYTES, MEDIA_TTL_DAYS, checkSize, isExpired } from '../lib/media'
+import { checkSize, isExpired } from '../lib/media'
 import { ContactPicker, findExisting } from './contacts'
 import { InviteCode } from './space-setup'
 import { useNav } from './nav'
@@ -507,16 +507,14 @@ function MediaBubble({ message: m, mine, stamp, onOpen }: { message: Message; mi
 }
 
 function MediaSendSheet({ file, onClose, onSend }: { file: File | null; onClose: () => void; onSend: (file: File) => void }) {
-  const video = file?.type.startsWith('video/')
   return (
-    <Sheet open={!!file} onClose={onClose} title={video ? 'Send a video' : 'Send a photo'}>
+    <Sheet open={!!file} onClose={onClose}>
       {file && <MediaSendBody file={file} onSend={onSend} />}
     </Sheet>
   )
 }
 
 function MediaSendBody({ file, onSend }: { file: File; onSend: (file: File) => void }) {
-  const { partner } = useSpace()
   const [url, setUrl] = useState<string | null>(null)
   useEffect(() => {
     const u = URL.createObjectURL(file)
@@ -539,14 +537,9 @@ function MediaSendBody({ file, onSend }: { file: File; onSend: (file: File) => v
       <div className="flex max-h-[45dvh] justify-center overflow-hidden rounded-2xl bg-black">
         {url && supported && (video ? <video src={url} controls muted playsInline className="max-h-[45dvh]" /> : <img src={url} alt="" className="max-h-[45dvh] object-contain" />)}
       </div>
-      <p className="text-sm text-muted">
-        <strong className="text-ink">View once.</strong> {partner?.display_name ?? 'Your person'} can open it one time, then it's
-        deleted. If it isn't opened within {MEDIA_TTL_DAYS} days, it's deleted anyway. It's encrypted on this phone before it's
-        sent{video ? `; videos can be up to ${Math.round(MAX_MEDIA_BYTES / 1024 / 1024)} MB` : ''}.
-      </p>
       {problem && <p className="text-sm text-danger">{problem}</p>}
       <Button className="w-full" disabled={!!problem} onClick={() => onSend(file)}>
-        Send view once
+        Send
       </Button>
     </div>
   )
