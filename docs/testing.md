@@ -10,6 +10,7 @@ npm run typecheck
 npm test
 python scripts/mutate.py          # each mutant must say CAUGHT, with a failing test (×) under it
 node scripts/audit-style.cjs .    # 0 functions over 29 lines, 0 repeated 4-line blocks
+node scripts/check-doc-names.cjs  # names in the docs' inline code spans still exist (see .claude/skills/update-docs)
 ```
 
 ### Unit tests (`*.test.ts`, vitest, node environment)
@@ -17,10 +18,10 @@ node scripts/audit-style.cjs .    # 0 functions over 29 lines, 0 repeated 4-line
 | File | Covers |
 | --- | --- |
 | `e2e.test.ts` | Text, contact, list item and member-name round trips. The same key from the same passphrase and salt; a different key with another salt. Fresh IVs. Wrong passphrase. Messages moved to another sender, space or id; files to another id; records to another row, list, field or space. Tampering. The check value |
-| `space/view.test.ts` | What screens see. Content without ciphertext before and after encryption. What still needs decrypting |
-| `space/shapes.test.ts` | Accepting what the app writes, rejecting malformed records, and a malformed record that decrypts counting as undecryptable |
-| `space/room.test.ts` | Presence budget. Announcing whether this device can take files, only once subscribed, and leaving when hidden. Partner presence. Rejoin backoff. Sealed signals. Ignoring replays (past timestamps), forgeries, junk, oversized signals and anything while locked. Passing the partner check through to the link |
-| `space/rows.test.ts` | The stored-rows reducer, including messages still being sent |
+| `view.test.ts` | What screens see. Content without ciphertext before and after encryption. What still needs decrypting |
+| `shapes.test.ts` | Accepting what the app writes, rejecting malformed records, and a malformed record that decrypts counting as undecryptable |
+| `room.test.ts` | Presence budget. Announcing whether this device can take files, only once subscribed, and leaving when hidden. Partner presence. Rejoin backoff. Sealed signals. Ignoring replays (past timestamps), forgeries, junk, oversized signals and anything while locked. Passing the partner check through to the link |
+| `rows.test.ts` | The stored-rows reducer, including messages still being sent |
 | `direct.test.ts` | Transfer framing: headers, reassembly, non-binary chunks, and more bytes than promised |
 | `invite.test.ts` | Invite links and codes, and dropping saved invites after two weeks |
 | `media.test.ts` | The video size limit, photo scaling, the 3-day expiry, the `PLAYABLE_TYPE` pattern, storage paths |
@@ -42,7 +43,7 @@ Tests that need WebCrypto use Node's built-in `crypto.subtle`. Nothing here talk
 
 ### Mutation suite (`scripts/mutate.py`)
 
-The script holds 13 fixed mutants, each breaking one check in `room.ts`, `view.ts`, `direct.ts`, `invite.ts` or
+The script holds a fixed list of mutants (`MUTANTS`), each breaking one check in `room.ts`, `view.ts`, `direct.ts`, `invite.ts` or
 `media.ts`. For each one it runs the test file that should notice, prints `CAUGHT` or `MISSED`, and always puts the
 file back byte for byte (LF or CRLF). `CAUGHT` only means vitest exited non-zero, so confirm a real failing test (`×`) is listed under it.
 A crash would also count. The script exits 1 if anything was `MISSED`.

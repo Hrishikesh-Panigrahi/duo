@@ -15,11 +15,13 @@ npm run typecheck    # tsc --noEmit (TypeScript 7 native)
 npm run build        # typecheck, then the production build into dist/, including dist/_headers
 npm run preview      # serves dist/ on :4173 with the same headers as production
 npx supabase start   # local stack in Docker; applies supabase/migrations (the CLI isn't a dependency, npx fetches it)
-python scripts/mutate.py          # breaks each of the 13 checks in MUTANTS in turn; each must say CAUGHT
+python scripts/mutate.py          # breaks each check in MUTANTS in turn; each must say CAUGHT
 node scripts/audit-style.cjs .    # function lengths and repeated blocks in src/ and vite.config.ts
+node scripts/check-doc-names.cjs  # names in the docs' inline code spans (paths, identifiers, npm scripts) still exist
 ```
 
-Before a PR: `npm run typecheck`, `npm test`, `python scripts/mutate.py`, `node scripts/audit-style.cjs .`.
+Before a PR: `npm run typecheck`, `npm test`, `python scripts/mutate.py`, `node scripts/audit-style.cjs .`,
+`node scripts/check-doc-names.cjs`.
 
 ## Where things are
 
@@ -63,6 +65,10 @@ More detail: [docs/architecture.md](docs/architecture.md), [docs/security.md](do
   a PR; the owner merges.
 - A migration that new frontend code depends on is applied to the live database **before** that code is merged.
 - Migrations are append-only: add a new file, never edit one that has been applied.
+- Docs say only what the code does, plus facts clearly labelled as observed outside the repo. When a change alters
+  behaviour that CLAUDE.md, README.md, `docs/`, `.claude/rules/` or `.claude/skills/` describe, update them in the
+  same PR using the `update-docs` skill. It writes each statement
+  from the code and has independent reviewers fact-check it.
 - Claim only what was tested, with a positive control for every "found nothing".
 - No Claude attribution lines in commits or PR descriptions.
 

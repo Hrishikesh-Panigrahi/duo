@@ -6,7 +6,7 @@ Things that have cost time before. Add to this when something surprises you.
 
 - **Tailwind 4 scans text files that aren't gitignored.** It skips binaries, CSS, lockfiles, `.gitignore`, `.env*`,
   `.git/` and `node_modules/`. A word like
-  `static`, `hidden` or `contents` in a doc becomes a CSS rule.
+  `static` or `hidden` in a doc becomes a CSS rule.
   - `src/index.css` excludes `docs/`, `scripts/`, `.claude/` and `CLAUDE.md` with `@source not`. A new non-UI
     folder needs its own line.
   - `README.md`, `supabase/` and the root config files are still scanned. Today they add no rules.

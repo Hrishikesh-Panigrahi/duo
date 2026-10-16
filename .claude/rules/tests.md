@@ -8,7 +8,7 @@ paths:
 
 See [docs/testing.md](../../docs/testing.md).
 
-- Tests sit next to the code (`foo.ts` → `foo.test.ts`) and run in vitest's node environment, with Node's
+- Tests sit next to the code (`media.ts` → `media.test.ts`) and run in vitest's node environment, with Node's
   WebCrypto. They never talk to Supabase.
 - Test names are plain sentences about behaviour: `it('rejects ciphertext moved to another sender, space or message id')`.
 - Security checks need a negative test (wrong key, wrong context, tampered, oversized, replayed) **and** a
