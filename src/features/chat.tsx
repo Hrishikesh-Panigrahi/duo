@@ -1,24 +1,16 @@
-import {
-  Fragment,
-  useEffect,
-  useLayoutEffect,
-  useRef,
-  useState,
-  type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
-  type ReactNode,
-} from 'react'
-import { ArrowUp, ContactRound, Copy, Download, Film, Image, ImagePlus, Lock, MessageCircleHeart, NotebookPen, Plus, Trash, X } from 'lucide-react'
+import { Fragment, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { ArrowUp, ContactRound, Copy, Download, Image, ImagePlus, Lock, MessageCircleHeart, NotebookPen, Plus, Trash } from 'lucide-react'
 import { time, useSpace } from '../lib/store'
 import { toCard, type Contact, type Message } from '../lib/types'
 import { downloadVCard, type ContactCard } from '../lib/vcard'
 import { todayYMD } from '../lib/dates'
 import { isTouch } from '../lib/device'
-import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, Spinner, cx, errorMessage, toast, toastError } from '../components/ui'
-import { checkSize, isExpired } from '../lib/media'
+import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, cx, toast, toastError } from '../components/ui'
+import { useLongPress } from '../components/long-press'
 import { ContactPicker, findExisting } from './contacts'
 import { InviteCode } from './space-setup'
 import { useNav } from './nav'
+import { MediaBubble, MediaSendSheet, MediaViewer } from './chat-media'
 
 const timeFmt = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
 const dayFmt = new Intl.DateTimeFormat(undefined, { weekday: 'long', day: 'numeric', month: 'long' })
@@ -142,81 +134,6 @@ export function ChatTab({ active }: { active: boolean }) {
       </Sheet>
     </div>
   )
-}
-
-/**
- * The menu opens while the finger is still down, so whatever the browser does
- * with that press next lands on the menu now under it: its own long-press
- * (selecting a word, a callout) or, when the finger lifts, a click on the
- * backdrop that would close the menu straight away. Hold all of that off
- * until just after the finger lifts.
- */
-function holdOffNativeLongPress() {
-  const types = ['selectstart', 'contextmenu', 'click']
-  const block = (e: Event) => {
-    e.preventDefault()
-    e.stopPropagation()
-  }
-  const opts = { capture: true }
-  for (const type of types) document.addEventListener(type, block, opts)
-  let done = false
-  const release = () => {
-    if (done) return
-    done = true
-    for (const type of types) document.removeEventListener(type, block, opts)
-    window.getSelection()?.removeAllRanges()
-  }
-  // The click from lifting the finger arrives right after it; a real tap on
-  // the menu comes much later than this.
-  const later = () => setTimeout(release, 400)
-  for (const type of ['pointerup', 'pointercancel', 'touchend', 'touchcancel']) window.addEventListener(type, later, { once: true, capture: true })
-  setTimeout(release, 3000) // in case the finger-up never arrives
-}
-
-/** Long-press on touch, right-click on desktop. */
-function useLongPress(onLongPress: () => void, ms = 450) {
-  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
-  const origin = useRef<{ x: number; y: number } | null>(null)
-  const fired = useRef(false)
-  const cancel = () => {
-    clearTimeout(timer.current)
-    origin.current = null
-  }
-  const fire = (byTouch: boolean) => {
-    if (fired.current) return
-    fired.current = true
-    navigator.vibrate?.(10)
-    if (byTouch) holdOffNativeLongPress()
-    onLongPress()
-  }
-  return {
-    onPointerDown: (e: ReactPointerEvent) => {
-      if (e.button !== 0) return
-      fired.current = false
-      origin.current = { x: e.clientX, y: e.clientY }
-      const byTouch = e.pointerType !== 'mouse'
-      timer.current = setTimeout(() => fire(byTouch), ms)
-    },
-    onPointerMove: (e: ReactPointerEvent) => {
-      if (origin.current && Math.hypot(e.clientX - origin.current.x, e.clientY - origin.current.y) > 10) cancel()
-    },
-    onPointerUp: cancel,
-    onPointerLeave: cancel,
-    onPointerCancel: cancel,
-    onContextMenu: (e: ReactMouseEvent) => {
-      e.preventDefault()
-      cancel()
-      fire(false)
-    },
-    // A long-press shouldn't also follow a link inside the bubble.
-    onClickCapture: (e: ReactMouseEvent) => {
-      if (fired.current) {
-        e.preventDefault()
-        e.stopPropagation()
-        fired.current = false
-      }
-    },
-  }
 }
 
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]}!?])/g
@@ -491,170 +408,5 @@ function Composer({
         <ArrowUp className="size-5" strokeWidth={2.5} />
       </button>
     </form>
-  )
-}
-
-// ─── View-once photos and videos ───────────────────────────────────────
-
-function MediaBubble({ message: m, mine, stamp, onOpen }: { message: Message; mine: boolean; stamp: ReactNode; onOpen: (m: Message) => void }) {
-  const video = m.media?.kind === 'video'
-  const Icon = video ? Film : Image
-  const what = video ? 'video' : 'photo'
-  const expired = !m.media_opened_at && isExpired(m.created_at)
-  const canOpen = !mine && !m.pending && !m.media_opened_at && !expired
-  const status = m.pending
-    ? 'Sending…'
-    : m.media_opened_at
-      ? 'Opened'
-      : expired
-        ? mine ? 'Expired without being opened' : 'Expired'
-        : mine ? 'View once · not opened yet' : 'View once'
-
-  const inner = (
-    <>
-      <span
-        className={cx(
-          'flex size-9 shrink-0 items-center justify-center rounded-full [&_svg]:size-[18px]',
-          canOpen ? 'bg-accent text-accent-ink' : 'bg-surface-2 text-muted',
-        )}
-      >
-        <Icon />
-      </span>
-      <span className="min-w-0 flex-1 text-left">
-        <span className="block font-medium">{canOpen ? `Tap to view ${what}` : video ? 'Video' : 'Photo'}</span>
-        <span className="block text-xs text-muted">{status}</span>
-      </span>
-      <span className="self-end text-muted">{stamp}</span>
-    </>
-  )
-  const cls = 'flex w-64 max-w-full items-center gap-3 rounded-[1.25rem] border border-line bg-surface px-3 py-2.5 text-ink'
-  return canOpen ? (
-    <button type="button" onClick={() => onOpen(m)} className={cx(cls, 'transition hover:border-accent/50')}>
-      {inner}
-    </button>
-  ) : (
-    <div className={cls}>{inner}</div>
-  )
-}
-
-function MediaSendSheet({ file, onClose, onSend }: { file: File | null; onClose: () => void; onSend: (file: File) => void }) {
-  return (
-    <Sheet open={!!file} onClose={onClose}>
-      {file && <MediaSendBody file={file} onSend={onSend} />}
-    </Sheet>
-  )
-}
-
-function MediaSendBody({ file, onSend }: { file: File; onSend: (file: File) => void }) {
-  const [url, setUrl] = useState<string | null>(null)
-  useEffect(() => {
-    const u = URL.createObjectURL(file)
-    setUrl(u)
-    return () => URL.revokeObjectURL(u)
-  }, [file])
-  const video = file.type.startsWith('video/')
-  const supported = video || file.type.startsWith('image/')
-  let problem: string | null = supported ? null : 'Only photos and videos can be sent.'
-  if (video) {
-    try {
-      checkSize(file.size, 'video')
-    } catch (e) {
-      problem = errorMessage(e)
-    }
-  }
-
-  return (
-    <div className="space-y-4">
-      <div className="flex max-h-[45dvh] justify-center overflow-hidden rounded-2xl bg-black">
-        {url && supported && (video ? <video src={url} controls muted playsInline className="max-h-[45dvh]" /> : <img src={url} alt="" className="max-h-[45dvh] object-contain" />)}
-      </div>
-      {problem && <p className="text-sm text-danger">{problem}</p>}
-      <Button className="w-full" disabled={!!problem} onClick={() => onSend(file)}>
-        Send
-      </Button>
-    </div>
-  )
-}
-
-/** Full-screen, one-time viewer. Opening it is what uses up the one view. */
-function MediaViewer({ message, onClose }: { message: Message | null; onClose: () => void }) {
-  const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => {
-    const d = ref.current
-    if (!d) return
-    if (message && !d.open) d.showModal()
-    if (!message && d.open) d.close()
-  }, [message])
-  return (
-    <dialog ref={ref} className="viewer" onClose={onClose} onContextMenu={(e) => e.preventDefault()}>
-      {message && <ViewerBody message={message} onClose={onClose} />}
-    </dialog>
-  )
-}
-
-function ViewerBody({ message, onClose }: { message: Message; onClose: () => void }) {
-  const { actions } = useSpace()
-  const [url, setUrl] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const used = useRef(false)
-
-  useEffect(() => {
-    let alive = true
-    let made: string | null = null
-    actions
-      .openMedia(message)
-      .then((u) => {
-        made = u
-        if (alive) setUrl(u)
-        else URL.revokeObjectURL(u)
-      })
-      .catch((e) => alive && setError(errorMessage(e)))
-    return () => {
-      alive = false
-      if (made) URL.revokeObjectURL(made)
-    }
-  }, [message, actions])
-
-  // It counts as opened once it's on screen: the file is deleted right then,
-  // so closing the app mid-view can't keep it around for a second look.
-  const onShown = () => {
-    if (used.current) return
-    used.current = true
-    actions.finishMedia(message).catch(() => {})
-  }
-
-  const video = message.media?.kind === 'video'
-  return (
-    <div className="no-callout flex h-full flex-col bg-black text-white">
-      <div className="flex shrink-0 items-center gap-2 px-2 pt-[calc(env(safe-area-inset-top)+0.5rem)] pb-2">
-        <IconButton label="Close" onClick={onClose} className="text-white hover:bg-white/10">
-          <X />
-        </IconButton>
-        <span className="text-sm text-white/70">View once: this closes for good</span>
-      </div>
-      <div className="flex min-h-0 flex-1 items-center justify-center p-2 pb-[calc(env(safe-area-inset-bottom)+0.5rem)]">
-        {error ? (
-          <p className="max-w-xs text-center text-sm text-white/80">{error}</p>
-        ) : !url ? (
-          <div className="flex flex-col items-center gap-3 text-sm text-white/70">
-            <Spinner className="size-6 text-white/70" />
-            Decrypting…
-          </div>
-        ) : video ? (
-          <video
-            src={url}
-            autoPlay
-            playsInline
-            controls
-            controlsList="nodownload noplaybackrate noremoteplayback"
-            disablePictureInPicture
-            onLoadedData={onShown}
-            className="max-h-full max-w-full"
-          />
-        ) : (
-          <img src={url} alt="" draggable={false} onLoad={onShown} className="max-h-full max-w-full object-contain" />
-        )}
-      </div>
-    </div>
   )
 }
