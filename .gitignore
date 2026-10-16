@@ -8,3 +8,6 @@ dev-dist
 .DS_Store
 supabase/.temp
 supabase/.branches
+.playwright-mcp
+.claude/settings.local.json
+CLAUDE.local.md
