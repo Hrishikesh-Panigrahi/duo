@@ -2,51 +2,33 @@ import { useEffect, useMemo, useState } from 'react'
 import { BookUser, Import, Plus, Search, Star } from 'lucide-react'
 import { useSpace } from '../lib/store'
 import type { Contact } from '../lib/types'
-import type { ContactCard } from '../lib/vcard'
+import { filterContacts } from '../lib/contact-match'
 import { Avatar, Button, Chip, EmptyState, IconButton, Input } from '../components/ui'
 import { ContactDetailSheet } from './contact-detail'
 import { ContactFormSheet } from './contact-form'
 import { ImportSheet } from './contact-import'
 import { useNav } from './nav'
 
-/** A contact already in the book with the same name or a shared phone number (its last ten digits). */
-export function findExisting(card: ContactCard, contacts: Contact[]): Contact | undefined {
-  const name = card.full_name.trim().toLowerCase()
-  const phones = new Set(card.phones.map((p) => p.replace(/\D/g, '').slice(-10)).filter((k) => k.length >= 7))
-  return contacts.find(
-    (c) => c.full_name.trim().toLowerCase() === name || c.phones.some((p) => phones.has(p.replace(/\D/g, '').slice(-10))),
-  )
-}
-
-export function filterContacts(contacts: Contact[], query: string, tag: string | null = null): Contact[] {
-  const needle = query.trim().toLowerCase()
-  const digits = needle.replace(/\D/g, '')
-  return contacts.filter((c) => {
-    if (tag && !c.tags.includes(tag)) return false
-    if (!needle) return true
-    const hay = [c.full_name, c.company, c.notes, c.address, ...c.emails, ...c.tags].filter(Boolean).join('\n').toLowerCase()
-    return hay.includes(needle) || (digits.length >= 3 && c.phones.some((p) => p.replace(/\D/g, '').includes(digits)))
-  })
-}
-
-export function ContactRow({ contact: c, onClick }: { contact: Contact; onClick: () => void }) {
+export function ContactRow({ contact, onClick }: { contact: Contact; onClick: () => void }) {
+  // A non-breaking space keeps the row's height when there's nothing to show under the name.
+  const subtitle = contact.company || contact.phones[0] || contact.emails[0] || '\u00A0'
   return (
     <button onClick={onClick} className="flex w-full items-center gap-3 px-4 py-2.5 text-left transition hover:bg-surface-2">
-      <Avatar name={c.full_name} />
+      <Avatar name={contact.full_name} />
       <div className="min-w-0 flex-1">
-        <div className="truncate font-medium">{c.full_name}</div>
-        <div className="truncate text-sm text-muted">{c.company || c.phones[0] || c.emails[0] || ' '}</div>
+        <div className="truncate font-medium">{contact.full_name}</div>
+        <div className="truncate text-sm text-muted">{subtitle}</div>
       </div>
-      {c.tags.slice(0, 2).map((t) => (
-        <span key={t} className="hidden rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted min-[400px]:inline">
-          {t}
+      {contact.tags.slice(0, 2).map((tagName) => (
+        <span key={tagName} className="hidden rounded-full bg-surface-2 px-2 py-0.5 text-xs text-muted min-[400px]:inline">
+          {tagName}
         </span>
       ))}
     </button>
   )
 }
 
-function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder: string }) {
+function SearchBox({ value, onChange, placeholder }: { value: string; onChange: (value: string) => void; placeholder: string }) {
   return (
     <div className="relative flex-1">
       <Search className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted" />
@@ -56,19 +38,19 @@ function SearchBox({ value, onChange, placeholder }: { value: string; onChange: 
 }
 
 /** Searchable list for choosing a contact (used by chat). */
-export function ContactPicker({ onPick }: { onPick: (c: Contact) => void }) {
+export function ContactPicker({ onPick }: { onPick: (contact: Contact) => void }) {
   const { contacts } = useSpace()
-  const [q, setQ] = useState('')
-  const results = filterContacts(contacts, q)
+  const [query, setQuery] = useState('')
+  const results = filterContacts(contacts, query)
   if (!contacts.length) return <p className="py-6 text-center text-sm text-muted">No contacts yet. Add some in the Contacts tab.</p>
   return (
     <div>
       <div className="sticky top-0 z-10 flex bg-surface pb-2">
-        <SearchBox value={q} onChange={setQ} placeholder="Search" />
+        <SearchBox value={query} onChange={setQuery} placeholder="Search" />
       </div>
       <div className="-mx-5">
-        {results.map((c) => (
-          <ContactRow key={c.id} contact={c} onClick={() => onPick(c)} />
+        {results.map((contact) => (
+          <ContactRow key={contact.id} contact={contact} onClick={() => onPick(contact)} />
         ))}
       </div>
     </div>
@@ -76,28 +58,41 @@ export function ContactPicker({ onPick }: { onPick: (c: Contact) => void }) {
 }
 
 type Section = { title: string | null; rows: Contact[] }
-const FAVOURITES = '★ Favourites'
+// The title that marks the favourites section; ContactSection draws its heading.
+const FAVOURITES_SECTION = '★ Favourites'
 
 /** Tags, most used first. */
 function tagsByUse(contacts: Contact[]): string[] {
-  const counts = new Map<string, number>()
-  contacts.forEach((c) => c.tags.forEach((t) => counts.set(t, (counts.get(t) ?? 0) + 1)))
-  return [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t)
+  const useCount = new Map<string, number>()
+  for (const contact of contacts) {
+    for (const tag of contact.tags) useCount.set(tag, (useCount.get(tag) ?? 0) + 1)
+  }
+  // Most used first; ties alphabetically.
+  const sorted = [...useCount].sort(([tagA, countA], [tagB, countB]) => countB - countA || tagA.localeCompare(tagB))
+  return sorted.map(([tag]) => tag)
 }
 
-/** Favourites first, then everyone else under their first letter. */
-function alphabetical(contacts: Contact[]): Section[] {
-  const out: Section[] = []
+/**
+ * Favourites first, then everyone else under their first letter.
+ * Contacts arrive sorted by name (src/lib/space/view.ts), so each letter's contacts are already together.
+ */
+function groupByFirstLetter(contacts: Contact[]): Section[] {
+  const sections: Section[] = []
   const favourites = contacts.filter((c) => c.favorite)
-  if (favourites.length) out.push({ title: FAVOURITES, rows: favourites })
-  for (const c of contacts) {
-    if (c.favorite) continue
-    const first = [...c.full_name.trim()][0]?.toUpperCase() ?? '#'
-    const letter = /\p{L}/u.test(first) ? first : '#'
-    if (out.at(-1)?.title !== letter) out.push({ title: letter, rows: [] })
-    out.at(-1)!.rows.push(c)
+  if (favourites.length) sections.push({ title: FAVOURITES_SECTION, rows: favourites })
+  let current: Section | undefined
+  for (const contact of contacts) {
+    if (contact.favorite) continue
+    // Spread splits by code point, so a first character made of two UTF-16 units (an emoji, say) stays whole.
+    const firstChar = [...contact.full_name.trim()][0]?.toUpperCase() ?? '#'
+    const letter = /\p{L}/u.test(firstChar) ? firstChar : '#'
+    if (!current || current.title !== letter) {
+      current = { title: letter, rows: [] }
+      sections.push(current)
+    }
+    current.rows.push(contact)
   }
-  return out
+  return sections
 }
 
 export function ContactsTab() {
@@ -106,16 +101,18 @@ export function ContactsTab() {
   const [tag, setTag] = useState<string | null>(null)
   const sheets = useContactSheets()
   const results = filterContacts(contacts, query, tag)
-  const sections = query.trim() || tag ? [{ title: null, rows: results }] : alphabetical(results)
+  // Searching or picking a tag shows one plain list of matches, without letter headings.
+  const isFiltering = query.trim() !== '' || Boolean(tag)
+  const sections = isFiltering ? [{ title: null, rows: results }] : groupByFirstLetter(results)
   const add = () => sheets.setEditing('new')
   const startImport = () => sheets.setImporting(true)
   return (
     <div className="flex h-full flex-col">
-      <ContactsToolbar query={query} onQuery={setQuery} tag={tag} onTag={setTag} onAdd={add} onImport={startImport} />
+      <ContactsToolbar query={query} onQuery={setQuery} selectedTag={tag} onSelectTag={setTag} onAdd={add} onImport={startImport} />
       <div className="min-h-0 flex-1 overflow-y-auto pb-4">
         {contacts.length === 0 && <ContactsEmpty onAdd={add} onImport={startImport} />}
         {contacts.length > 0 && results.length === 0 && <p className="py-12 text-center text-sm text-muted">No one matches that.</p>}
-        {results.length > 0 && sections.map((s, i) => <ContactSection key={s.title ?? i} section={s} onOpen={sheets.setOpenId} />)}
+        {results.length > 0 && sections.map((section, i) => <ContactSection key={section.title ?? i} section={section} onOpen={sheets.setOpenId} />)}
       </div>
       <ContactsSheets sheets={sheets} />
     </div>
@@ -125,13 +122,13 @@ export function ContactsTab() {
 type ToolbarProps = {
   query: string
   onQuery: (query: string) => void
-  tag: string | null
-  onTag: (tag: string | null) => void
+  selectedTag: string | null
+  onSelectTag: (tag: string | null) => void
   onAdd: () => void
   onImport: () => void
 }
 
-function ContactsToolbar({ query, onQuery, tag, onTag, onAdd, onImport }: ToolbarProps) {
+function ContactsToolbar({ query, onQuery, selectedTag, onSelectTag, onAdd, onImport }: ToolbarProps) {
   const { contacts } = useSpace()
   const tags = useMemo(() => tagsByUse(contacts), [contacts])
   return (
@@ -147,9 +144,9 @@ function ContactsToolbar({ query, onQuery, tag, onTag, onAdd, onImport }: Toolba
       </div>
       {tags.length > 0 && (
         <div className="-mx-4 flex gap-2 overflow-x-auto px-4 [scrollbar-width:none]">
-          {tags.map((t) => (
-            <Chip key={t} active={tag === t} onClick={() => onTag(tag === t ? null : t)}>
-              {t}
+          {tags.map((tagName) => (
+            <Chip key={tagName} active={selectedTag === tagName} onClick={() => onSelectTag(selectedTag === tagName ? null : tagName)}>
+              {tagName}
             </Chip>
           ))}
         </div>
@@ -174,25 +171,27 @@ function ContactsEmpty({ onAdd, onImport }: { onAdd: () => void; onImport: () =>
   )
 }
 
-function ContactSection({ section: s, onOpen }: { section: Section; onOpen: (id: string) => void }) {
-  const favourites = (
+function ContactSection({ section, onOpen }: { section: Section; onOpen: (id: string) => void }) {
+  const favouritesHeading = (
     <span className="inline-flex items-center gap-1">
       <Star className="size-3 fill-current" /> Favourites
     </span>
   )
   return (
     <section>
-      {s.title && (
-        <h3 className="sticky top-0 z-10 bg-bg px-4 py-1 text-xs font-semibold text-muted">{s.title === FAVOURITES ? favourites : s.title}</h3>
+      {section.title && (
+        <h3 className="sticky top-0 z-10 bg-bg px-4 py-1 text-xs font-semibold text-muted">
+          {section.title === FAVOURITES_SECTION ? favouritesHeading : section.title}
+        </h3>
       )}
-      {s.rows.map((c) => (
-        <ContactRow key={c.id} contact={c} onClick={() => onOpen(c.id)} />
+      {section.rows.map((contact) => (
+        <ContactRow key={contact.id} contact={contact} onClick={() => onOpen(contact.id)} />
       ))}
     </section>
   )
 }
 
-type ContactSheets = ReturnType<typeof useContactSheets>
+type ContactSheetState = ReturnType<typeof useContactSheets>
 
 /** Which contact is open, being edited, or imported. Chat and Lists can ask for one to be opened. */
 function useContactSheets() {
@@ -202,29 +201,29 @@ function useContactSheets() {
   const [editing, setEditing] = useState<Contact | 'new' | null>(null)
   const [importing, setImporting] = useState(false)
   useEffect(() => {
-    if (!nav.focusContactId) return
-    setOpenId(nav.focusContactId)
-    nav.clearFocusContact()
+    if (!nav.contactIdToOpen) return
+    setOpenId(nav.contactIdToOpen)
+    nav.clearContactIdToOpen()
   }, [nav])
-  const open = contacts.find((c) => c.id === openId) ?? null
-  return { open, setOpenId, editing, setEditing, importing, setImporting }
+  const shownContact = contacts.find((c) => c.id === openId) ?? null
+  return { shownContact, setOpenId, editing, setEditing, importing, setImporting }
 }
 
-function ContactsSheets({ sheets: s }: { sheets: ContactSheets }) {
-  const edit = () => {
-    s.setEditing(s.open)
-    s.setOpenId(null)
+function ContactsSheets({ sheets }: { sheets: ContactSheetState }) {
+  const editShownContact = () => {
+    sheets.setEditing(sheets.shownContact)
+    sheets.setOpenId(null)
   }
   return (
     <>
-      <ContactDetailSheet contact={s.open} onClose={() => s.setOpenId(null)} onEdit={edit} />
+      <ContactDetailSheet contact={sheets.shownContact} onClose={() => sheets.setOpenId(null)} onEdit={editShownContact} />
       <ContactFormSheet
-        contact={s.editing === 'new' ? null : s.editing}
-        open={s.editing !== null}
-        onClose={() => s.setEditing(null)}
-        onSaved={(c) => s.setOpenId(c.id)}
+        contact={sheets.editing === 'new' ? null : sheets.editing}
+        open={sheets.editing !== null}
+        onClose={() => sheets.setEditing(null)}
+        onSaved={(saved) => sheets.setOpenId(saved.id)}
       />
-      <ImportSheet open={s.importing} onClose={() => s.setImporting(false)} />
+      <ImportSheet open={sheets.importing} onClose={() => sheets.setImporting(false)} />
     </>
   )
 }

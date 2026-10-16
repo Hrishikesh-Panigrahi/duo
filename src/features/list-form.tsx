@@ -7,25 +7,25 @@ import { useBusy } from '../components/use-busy'
 
 const EMOJIS = ['🛒', '✅', '🏠', '🎁', '✈️', '🍿', '💊', '📚', '🎉', '💡', '🧺', '❤️']
 
-type ListSheetProps = { open: boolean; list: List | null; onClose: () => void; onSaved?: (l: List) => void; onDeleted?: () => void }
+type ListSheetProps = { open: boolean; list: List | null; onClose: () => void; onSaved?: (savedList: List) => void; onDeleted?: () => void }
 
 export function ListSheet({ open, list, onClose, onSaved, onDeleted }: ListSheetProps) {
-  const saved = (l: List) => {
+  const closeAndReportSaved = (savedList: List) => {
     onClose()
-    onSaved?.(l)
+    onSaved?.(savedList)
   }
-  const deleted = () => {
+  const closeAndReportDeleted = () => {
     onClose()
     onDeleted?.()
   }
   return (
     <Sheet open={open} onClose={onClose} title={list ? 'Edit list' : 'New list'}>
-      <ListForm list={list} onSaved={saved} onDeleted={deleted} />
+      <ListForm list={list} onSaved={closeAndReportSaved} onDeleted={closeAndReportDeleted} />
     </Sheet>
   )
 }
 
-function ListForm({ list, onSaved, onDeleted }: { list: List | null; onSaved: (l: List) => void; onDeleted: () => void }) {
+function ListForm({ list, onSaved, onDeleted }: { list: List | null; onSaved: (savedList: List) => void; onDeleted: () => void }) {
   const { actions } = useSpace()
   const [title, setTitle] = useState(list?.title ?? '')
   const [emoji, setEmoji] = useState(list?.emoji ?? EMOJIS[0])
@@ -33,7 +33,10 @@ function ListForm({ list, onSaved, onDeleted }: { list: List | null; onSaved: (l
   function save(e: FormEvent) {
     e.preventDefault()
     const input = { title: title.trim(), emoji }
-    void run(async () => onSaved(list ? await actions.lists.update(list.id, input) : await actions.lists.add(input)))
+    void run(async () => {
+      const savedList = list ? await actions.lists.update(list.id, input) : await actions.lists.add(input)
+      onSaved(savedList)
+    })
   }
   return (
     <form onSubmit={save} className="space-y-5">
@@ -52,16 +55,16 @@ function ListForm({ list, onSaved, onDeleted }: { list: List | null; onSaved: (l
 function EmojiPicker({ value, onChange }: { value: string; onChange: (emoji: string) => void }) {
   return (
     <div className="grid grid-cols-6 gap-2" role="radiogroup" aria-label="Icon">
-      {EMOJIS.map((e) => (
+      {EMOJIS.map((emoji) => (
         <button
-          key={e}
+          key={emoji}
           type="button"
           role="radio"
-          aria-checked={value === e}
-          onClick={() => onChange(e)}
-          className={cx('flex aspect-square items-center justify-center rounded-xl text-2xl transition', value === e ? 'bg-accent-soft ring-2 ring-accent' : 'bg-surface-2')}
+          aria-checked={value === emoji}
+          onClick={() => onChange(emoji)}
+          className={cx('flex aspect-square items-center justify-center rounded-xl text-2xl transition', value === emoji ? 'bg-accent-soft ring-2 ring-accent' : 'bg-surface-2')}
         >
-          {e}
+          {emoji}
         </button>
       ))}
     </div>

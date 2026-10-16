@@ -3,7 +3,7 @@ import type { RealtimeChannel, RealtimePostgresChangesPayload } from '@supabase/
 import { errorMessage } from '../../components/ui'
 import { must, supabase } from '../supabase'
 import type { StoredContact, StoredItem, StoredList, StoredMember, StoredMessage, StoredNote, StoredSpace } from '../types'
-import { MESSAGE_LIMIT, TABLES, sorted, type AnyRow, type Rows, type Table } from './rows'
+import { MESSAGE_LIMIT, TABLES, oldestFirst, type AnyRow, type Rows, type Table } from './rows'
 
 export type RowChange = { type: 'upsert'; table: Table; row: AnyRow } | { type: 'remove'; table: Table; id: string }
 
@@ -21,20 +21,21 @@ export type SyncOptions = {
 
 export class SpaceSync {
   private alive = true
-  private readonly changes: RealtimeChannel
+  private readonly changesChannel: RealtimeChannel
 
-  constructor(private readonly o: SyncOptions) {
+  constructor(private readonly options: SyncOptions) {
     // A unique name: supabase.channel(name) hands back any channel with that name, even one a previous
     // mount is still tearing down, and reusing that one goes silently dead.
-    this.changes = supabase.channel(`changes:${o.spaceId}:${Math.random().toString(36).slice(2)}`)
+    const uniqueSuffix = Math.random().toString(36).slice(2)
+    this.changesChannel = supabase.channel(`changes:${options.spaceId}:${uniqueSuffix}`)
     for (const table of TABLES) {
       // Unfiltered: Realtime can't filter DELETEs, and RLS already limits the rest to our space.
-      this.changes.on('postgres_changes', { event: '*', schema: 'public', table }, (p) => this.applyChange(table, p))
+      this.changesChannel.on('postgres_changes', { event: '*', schema: 'public', table }, (change) => this.applyChange(table, change))
     }
     for (const table of ['spaces', 'members']) {
-      this.changes.on('postgres_changes', { event: '*', schema: 'public', table }, () => void this.loadMeta().catch(() => {}))
+      this.changesChannel.on('postgres_changes', { event: '*', schema: 'public', table }, () => void this.loadSpaceAndMembers().catch(() => {}))
     }
-    this.changes.subscribe((status) => {
+    this.changesChannel.subscribe((status) => {
       if (status === 'SUBSCRIBED') void this.reload() // catches anything that changed while (re)connecting
     })
     void this.reload()
@@ -43,21 +44,21 @@ export class SpaceSync {
   /** Fetches everything again (the app came back to the foreground). */
   async reload() {
     try {
-      const [rows] = await Promise.all([this.loadRows(), this.loadMeta()])
-      if (this.alive) this.o.onRows(rows)
+      const [rows] = await Promise.all([this.loadRows(), this.loadSpaceAndMembers()])
+      if (this.alive) this.options.onRows(rows)
     } catch (e) {
       if (import.meta.env.DEV) console.error('Loading space failed', e)
-      if (this.alive) this.o.onError(errorMessage(e))
+      if (this.alive) this.options.onError(errorMessage(e))
     }
   }
 
   close() {
     this.alive = false
-    void supabase.removeChannel(this.changes)
+    void supabase.removeChannel(this.changesChannel)
   }
 
   private async loadRows(): Promise<Rows> {
-    const inSpace = (t: Table) => supabase.from(t).select('*').eq('space_id', this.o.spaceId)
+    const inSpace = (t: Table) => supabase.from(t).select('*').eq('space_id', this.options.spaceId)
     const [contacts, messages, notes, lists, list_items] = await Promise.all([
       must<StoredContact[]>(inSpace('contacts')),
       must<StoredMessage[]>(inSpace('messages').order('created_at', { ascending: false }).limit(MESSAGE_LIMIT)),
@@ -66,35 +67,35 @@ export class SpaceSync {
       must<StoredItem[]>(inSpace('list_items')),
     ])
     return {
-      contacts: sorted(contacts),
-      messages: sorted(messages),
-      notes: sorted(notes),
-      lists: sorted(lists),
-      list_items: sorted(list_items),
+      contacts: oldestFirst(contacts),
+      messages: oldestFirst(messages),
+      notes: oldestFirst(notes),
+      lists: oldestFirst(lists),
+      list_items: oldestFirst(list_items),
     }
   }
 
-  private async loadMeta() {
+  private async loadSpaceAndMembers() {
     const [space, members] = await Promise.all([
-      must<StoredSpace>(supabase.from('spaces').select('*').eq('id', this.o.spaceId).single()),
-      must<StoredMember[]>(supabase.from('members').select('*').eq('space_id', this.o.spaceId).order('joined_at')),
+      must<StoredSpace>(supabase.from('spaces').select('*').eq('id', this.options.spaceId).single()),
+      must<StoredMember[]>(supabase.from('members').select('*').eq('space_id', this.options.spaceId).order('joined_at')),
     ])
     if (!this.alive) return
-    this.o.onSpace(space)
-    this.o.onMembers(members)
+    this.options.onSpace(space)
+    this.options.onMembers(members)
   }
 
-  private applyChange(table: Table, p: RealtimePostgresChangesPayload<Record<string, unknown>>) {
-    if (p.eventType === 'DELETE') {
+  private applyChange(table: Table, change: RealtimePostgresChangesPayload<Record<string, unknown>>) {
+    if (change.eventType === 'DELETE') {
       // A DELETE carries only the id; removing one we don't have is a no-op.
-      const id = (p.old as Partial<AnyRow>).id
-      if (id) this.o.onChange({ type: 'remove', table, id })
+      const id = (change.old as Partial<AnyRow>).id
+      if (id) this.options.onChange({ type: 'remove', table, id })
       return
     }
-    const row = p.new as AnyRow & { space_id: string; sender_id?: string }
-    if (row.space_id !== this.o.spaceId) return
-    this.o.onChange({ type: 'upsert', table, row })
-    if (table === 'messages' && p.eventType === 'INSERT' && row.sender_id !== this.o.userId) this.o.onPartnerMessage()
+    const row = change.new as AnyRow & { space_id: string; sender_id?: string }
+    if (row.space_id !== this.options.spaceId) return
+    this.options.onChange({ type: 'upsert', table, row })
+    if (table === 'messages' && change.eventType === 'INSERT' && row.sender_id !== this.options.userId) this.options.onPartnerMessage()
   }
 }
 

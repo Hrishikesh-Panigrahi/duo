@@ -20,94 +20,105 @@ const unescapeValue = (s: string) =>
 
 /** Folds at 75 octets (RFC 6350 §3.2) without splitting a UTF-8 character. */
 function fold(line: string): string {
-  const enc = new TextEncoder()
-  let out = ''
-  let chunk = ''
-  let bytes = 0
-  let limit = 75
-  for (const ch of line) {
-    const n = enc.encode(ch).length
-    if (bytes + n > limit) {
-      out += chunk + '\r\n '
-      chunk = ''
-      bytes = 0
-      limit = 74 // continuation lines spend one octet on the leading space
+  const utf8 = new TextEncoder()
+  let folded = ''
+  let currentLine = ''
+  let lineBytes = 0
+  let maxBytes = 75
+  for (const character of line) {
+    const characterBytes = utf8.encode(character).length
+    if (lineBytes + characterBytes > maxBytes) {
+      folded += currentLine + '\r\n '
+      currentLine = ''
+      lineBytes = 0
+      maxBytes = 74 // continuation lines spend one octet on the leading space
     }
-    chunk += ch
-    bytes += n
+    currentLine += character
+    lineBytes += characterBytes
   }
-  return out + chunk
+  return folded + currentLine
 }
 
-export function toVCard(c: ContactCard, opts: { includeNotes?: boolean } = {}): string {
-  const name = c.full_name.trim()
+export function toVCard(card: ContactCard, opts: { includeNotes?: boolean } = {}): string {
+  const name = card.full_name.trim()
   const words = name.split(/\s+/)
   const family = words.length > 1 ? words[words.length - 1] : ''
   const given = words.length > 1 ? words.slice(0, -1).join(' ') : name
 
   const lines = ['BEGIN:VCARD', 'VERSION:3.0', `N:${escapeValue(family)};${escapeValue(given)};;;`, `FN:${escapeValue(name)}`]
-  if (c.company?.trim()) lines.push(`ORG:${escapeValue(c.company.trim())}`)
-  for (const p of c.phones) if (p.trim()) lines.push(`TEL;TYPE=CELL:${escapeValue(p.trim())}`)
-  for (const e of c.emails) if (e.trim()) lines.push(`EMAIL;TYPE=INTERNET:${escapeValue(e.trim())}`)
-  if (c.birthday) {
+  if (card.company?.trim()) lines.push(`ORG:${escapeValue(card.company.trim())}`)
+  for (const phone of card.phones) if (phone.trim()) lines.push(`TEL;TYPE=CELL:${escapeValue(phone.trim())}`)
+  for (const email of card.emails) if (email.trim()) lines.push(`EMAIL;TYPE=INTERNET:${escapeValue(email.trim())}`)
+  if (card.birthday) {
     lines.push(
-      c.birthday.startsWith(`${NO_YEAR}-`) ? `BDAY;X-APPLE-OMIT-YEAR=${NO_YEAR}:${c.birthday}` : `BDAY:${c.birthday}`,
+      card.birthday.startsWith(`${NO_YEAR}-`) ? `BDAY;X-APPLE-OMIT-YEAR=${NO_YEAR}:${card.birthday}` : `BDAY:${card.birthday}`,
     )
   }
-  if (c.address?.trim()) lines.push(`ADR;TYPE=HOME:;;${escapeValue(c.address.trim())};;;;`)
-  if (c.notes?.trim() && opts.includeNotes !== false) lines.push(`NOTE:${escapeValue(c.notes.trim())}`)
+  if (card.address?.trim()) lines.push(`ADR;TYPE=HOME:;;${escapeValue(card.address.trim())};;;;`)
+  if (card.notes?.trim() && opts.includeNotes !== false) lines.push(`NOTE:${escapeValue(card.notes.trim())}`)
   lines.push('END:VCARD')
   return lines.map(fold).join('\r\n') + '\r\n'
 }
 
 /** Splits a structured value (N, ADR, ORG) on unescaped semicolons. */
-function splitStructured(v: string): string[] {
+function splitStructured(value: string): string[] {
   const parts: string[] = []
-  let cur = ''
-  for (let i = 0; i < v.length; i++) {
-    if (v[i] === '\\' && i + 1 < v.length) {
-      cur += v[i] + v[i + 1]
+  let part = ''
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] === '\\' && i + 1 < value.length) {
+      part += value[i] + value[i + 1]
       i++
-    } else if (v[i] === ';') {
-      parts.push(unescapeValue(cur).trim())
-      cur = ''
+    } else if (value[i] === ';') {
+      parts.push(unescapeValue(part).trim())
+      part = ''
     } else {
-      cur += v[i]
+      part += value[i]
     }
   }
-  parts.push(unescapeValue(cur).trim())
+  parts.push(unescapeValue(part).trim())
   return parts
 }
 
-function decodeQuotedPrintable(s: string): string {
+function decodeQuotedPrintable(encoded: string): string {
   const bytes: number[] = []
-  const enc = new TextEncoder()
-  for (let i = 0; i < s.length; i++) {
-    const hex = s.slice(i + 1, i + 3)
-    if (s[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(hex)) {
+  const utf8 = new TextEncoder()
+  for (let i = 0; i < encoded.length; i++) {
+    const hex = encoded.slice(i + 1, i + 3)
+    if (encoded[i] === '=' && /^[0-9A-Fa-f]{2}$/.test(hex)) {
       bytes.push(parseInt(hex, 16))
       i += 2
     } else {
-      bytes.push(...enc.encode(s[i]))
+      bytes.push(...utf8.encode(encoded[i]))
     }
   }
   return new TextDecoder().decode(new Uint8Array(bytes))
 }
 
+const FULL_DATE = /^(\d{4})-?(\d{2})-?(\d{2})/
+/** vCard 4's "no year" form: --MMDD or --MM-DD. */
+const NO_YEAR_DATE = /^--(\d{2})-?(\d{2})/
+
 function parseBirthday(raw: string): string | null {
-  const v = raw.trim()
-  let m = /^(\d{4})-?(\d{2})-?(\d{2})/.exec(v)
-  if (m) return `${m[1]}-${m[2]}-${m[3]}`
-  m = /^--(\d{2})-?(\d{2})/.exec(v) // vCard 4 "no year" form
-  if (m) return `${NO_YEAR}-${m[1]}-${m[2]}`
+  const value = raw.trim()
+  const full = FULL_DATE.exec(value)
+  if (full) return `${full[1]}-${full[2]}-${full[3]}`
+  const monthDay = NO_YEAR_DATE.exec(value)
+  if (monthDay) return `${NO_YEAR}-${monthDay[1]}-${monthDay[2]}`
   return null
 }
 
-type Draft = { fn?: string; n?: string } & Omit<ContactCard, 'full_name'>
+/** A card while it's being read. Its full_name is worked out from FN, N and the rest once the card ends. */
+type Draft = { formattedName?: string; structuredName?: string } & Omit<ContactCard, 'full_name'>
+
+const BYTE_ORDER_MARK = /^\uFEFF/
+const LINE_ENDINGS = /\r\n?/g
+/** A line break followed by a space or tab continues the line before it. */
+const FOLDED_LINE_BREAK = /\n[ \t]/g
 
 /** Parses every card in a .vcf file. Handles vCard 2.1 (Android exports), 3.0 and 4.0. */
 export function parseVCards(text: string): ContactCard[] {
-  const lines = text.replace(/^\uFEFF/, '').replace(/\r\n?/g, '\n').replace(/\n[ \t]/g, '').split('\n') // unfolded
+  const unfolded = text.replace(BYTE_ORDER_MARK, '').replace(LINE_ENDINGS, '\n').replace(FOLDED_LINE_BREAK, '')
+  const lines = unfolded.split('\n')
   const cards: ContactCard[] = []
   let draft: Draft | null = null
   for (let i = 0; i < lines.length; i++) {
@@ -118,7 +129,10 @@ export function parseVCards(text: string): ContactCard[] {
     let value = lines[i].slice(colon + 1)
     if (params.some((p) => /^(ENCODING=)?QUOTED-PRINTABLE$/i.test(p))) {
       // vCard 2.1 soft line breaks: a trailing "=" continues onto the next line.
-      while (value.endsWith('=') && i + 1 < lines.length) value = value.slice(0, -1) + lines[++i]
+      while (value.endsWith('=') && i + 1 < lines.length) {
+        i++
+        value = value.slice(0, -1) + lines[i]
+      }
       value = decodeQuotedPrintable(value)
     }
     if (prop === 'BEGIN' && value.trim().toUpperCase() === 'VCARD') draft = { phones: [], emails: [] }
@@ -131,26 +145,26 @@ export function parseVCards(text: string): ContactCard[] {
   return cards
 }
 
-function readProperty(d: Draft, prop: string, value: string) {
-  if (prop === 'FN') d.fn = unescapeValue(value)
-  else if (prop === 'N') d.n = value
-  else if (prop === 'TEL') d.phones.push(unescapeValue(value).replace(/^tel:/i, '').trim())
-  else if (prop === 'EMAIL') d.emails.push(unescapeValue(value).replace(/^mailto:/i, '').trim())
-  else if (prop === 'ORG') d.company = splitStructured(value).filter(Boolean).join(', ') || null
-  else if (prop === 'ADR') d.address = splitStructured(value).filter(Boolean).join(', ') || null
-  else if (prop === 'BDAY') d.birthday = parseBirthday(value)
-  else if (prop === 'NOTE') d.notes = unescapeValue(value).trim() || null
+function readProperty(draft: Draft, prop: string, value: string) {
+  if (prop === 'FN') draft.formattedName = unescapeValue(value)
+  else if (prop === 'N') draft.structuredName = value
+  else if (prop === 'TEL') draft.phones.push(unescapeValue(value).replace(/^tel:/i, '').trim())
+  else if (prop === 'EMAIL') draft.emails.push(unescapeValue(value).replace(/^mailto:/i, '').trim())
+  else if (prop === 'ORG') draft.company = splitStructured(value).filter(Boolean).join(', ') || null
+  else if (prop === 'ADR') draft.address = splitStructured(value).filter(Boolean).join(', ') || null
+  else if (prop === 'BDAY') draft.birthday = parseBirthday(value)
+  else if (prop === 'NOTE') draft.notes = unescapeValue(value).trim() || null
 }
 
-function finishCard(d: Draft): ContactCard | null {
-  const phones = d.phones.filter(Boolean)
-  const emails = d.emails.filter(Boolean)
-  const n = d.n ? splitStructured(d.n) : []
+function finishCard(draft: Draft): ContactCard | null {
+  const phones = draft.phones.filter(Boolean)
+  const emails = draft.emails.filter(Boolean)
   // N is family;given;additional;prefix;suffix
-  const fromN = [n[3], n[1], n[2], n[0], n[4]].filter(Boolean).join(' ')
-  const full_name = (d.fn?.trim() || fromN || d.company || phones[0] || emails[0] || '').trim()
+  const [family, given, additional, prefix, suffix] = draft.structuredName ? splitStructured(draft.structuredName) : []
+  const nameFromParts = [prefix, given, additional, family, suffix].filter(Boolean).join(' ')
+  const full_name = (draft.formattedName?.trim() || nameFromParts || draft.company || phones[0] || emails[0] || '').trim()
   if (!full_name) return null
-  const { company = null, address = null, birthday = null, notes = null } = d
+  const { company = null, address = null, birthday = null, notes = null } = draft
   return { full_name, phones, emails, company, address, birthday, notes }
 }
 
@@ -161,12 +175,12 @@ export function vcardFileName(name: string): string {
 /** Downloads a .vcf. On iPhone this opens the "Create New Contact" preview. */
 export function downloadVCard(card: ContactCard) {
   const url = URL.createObjectURL(new File([toVCard(card)], vcardFileName(card.full_name), { type: 'text/vcard' }))
-  const a = document.createElement('a')
-  a.href = url
-  a.download = vcardFileName(card.full_name)
-  document.body.appendChild(a)
-  a.click()
-  a.remove()
+  const link = document.createElement('a')
+  link.href = url
+  link.download = vcardFileName(card.full_name)
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
   setTimeout(() => URL.revokeObjectURL(url), 10_000)
 }
 

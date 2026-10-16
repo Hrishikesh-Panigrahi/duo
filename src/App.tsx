@@ -55,15 +55,15 @@ function useMySpace(userId: string) {
   useEffect(() => {
     let alive = true
     const query = supabase.from('members').select('space_id').eq('user_id', userId).maybeSingle()
-    query.then(({ data, error }) => {
+    query.then(({ data: membership, error: queryError }) => {
       if (!alive) return
-      if (error) return setError(errorMessage(serverError(error)))
+      if (queryError) return setError(errorMessage(serverError(queryError)))
       // Each account belongs to one space, so an invite opened after joining one has nothing to do.
-      if (data?.space_id && pendingInvite.get()) {
+      if (membership?.space_id && pendingInvite.get()) {
         pendingInvite.clear()
         toast("You're already in a space, so that invite wasn't used")
       }
-      setSpaceId(data?.space_id ?? null)
+      setSpaceId(membership?.space_id ?? null)
     })
     return () => {
       alive = false

@@ -1,11 +1,12 @@
 // Invite links: /join#ABCD-EFGH joins that space once you're signed in. The code sits after the #,
 // which browsers never send to a server, and the passphrase is never in the link.
 
+import { MS_PER_DAY } from './dates'
 import { deviceStorage } from './device-storage'
 
 const STORE_KEY = 'duo:invite'
 /** Unused invites are forgotten after this. */
-const KEEP_MS = 14 * 86_400_000
+const KEEP_MS = 14 * MS_PER_DAY
 // 8 characters from the same no-look-alikes alphabet the database uses.
 const CODE = /^[A-HJKMNP-Z2-9]{8}$/
 

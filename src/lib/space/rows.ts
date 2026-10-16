@@ -25,8 +25,7 @@ export const TABLES: Table[] = ['contacts', 'messages', 'notes', 'lists', 'list_
 /** Only the newest messages are loaded. */
 export const MESSAGE_LIMIT = 500
 
-/** Oldest first. */
-export const sorted = <T extends AnyRow>(rows: T[]) => [...rows].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
+export const oldestFirst = <T extends AnyRow>(rows: T[]) => [...rows].sort((a, b) => Date.parse(a.created_at) - Date.parse(b.created_at))
 
 export const emptyRows: Rows = { contacts: [], messages: [], notes: [], lists: [], list_items: [] }
 
@@ -35,26 +34,26 @@ export type RowAction =
   | { type: 'upsert'; table: Table; row: AnyRow }
   | { type: 'remove'; table: Table; id: string }
   /** Swaps one row for another (an optimistic row for the confirmed one, or an old id for a new one). */
-  | { type: 'confirm'; table: Table; tempId: string; row: AnyRow }
+  | { type: 'confirm'; table: Table; replacedId: string; row: AnyRow }
 
-export function rowsReducer(state: Rows, a: RowAction): Rows {
-  switch (a.type) {
+export function rowsReducer(state: Rows, action: RowAction): Rows {
+  switch (action.type) {
     case 'load': {
       // Keep messages still in flight; the load can't know about them yet.
-      const pending = state.messages.filter((m) => m.pending && !a.rows.messages.some((r) => r.id === m.id))
-      return { ...a.rows, messages: sorted([...a.rows.messages, ...pending]) }
+      const stillSending = state.messages.filter((m) => m.pending && !action.rows.messages.some((r) => r.id === m.id))
+      return { ...action.rows, messages: oldestFirst([...action.rows.messages, ...stillSending]) }
     }
     case 'upsert': {
-      const rows = (state[a.table] as AnyRow[]).filter((r) => r.id !== a.row.id)
-      return { ...state, [a.table]: sorted([...rows, a.row]) }
+      const rows = (state[action.table] as AnyRow[]).filter((r) => r.id !== action.row.id)
+      return { ...state, [action.table]: oldestFirst([...rows, action.row]) }
     }
     case 'confirm': {
-      const rows = (state[a.table] as AnyRow[]).filter((r) => r.id !== a.tempId && r.id !== a.row.id)
-      return { ...state, [a.table]: sorted([...rows, a.row]) }
+      const rows = (state[action.table] as AnyRow[]).filter((r) => r.id !== action.replacedId && r.id !== action.row.id)
+      return { ...state, [action.table]: oldestFirst([...rows, action.row]) }
     }
     case 'remove': {
-      const next = { ...state, [a.table]: (state[a.table] as AnyRow[]).filter((r) => r.id !== a.id) }
-      if (a.table === 'lists') next.list_items = state.list_items.filter((i) => i.list_id !== a.id)
+      const next = { ...state, [action.table]: (state[action.table] as AnyRow[]).filter((r) => r.id !== action.id) }
+      if (action.table === 'lists') next.list_items = state.list_items.filter((i) => i.list_id !== action.id)
       return next
     }
   }

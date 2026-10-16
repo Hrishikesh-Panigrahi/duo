@@ -5,6 +5,7 @@ import {
   type ButtonHTMLAttributes,
   type CSSProperties,
   type InputHTMLAttributes,
+  type MouseEvent as ReactMouseEvent,
   type ReactNode,
   type Ref,
   type TextareaHTMLAttributes,
@@ -67,15 +68,15 @@ export function IconButton({ label, className, children, ...rest }: ButtonHTMLAt
   )
 }
 
-const field =
+const fieldClass =
   'w-full rounded-xl bg-surface-2 px-3.5 text-base text-ink outline-none placeholder:text-muted focus:ring-2 focus:ring-accent/40'
 
 export function Input({ className, ref, ...rest }: InputHTMLAttributes<HTMLInputElement> & { ref?: Ref<HTMLInputElement> }) {
-  return <input ref={ref} className={cx(field, 'h-11', className)} {...rest} />
+  return <input ref={ref} className={cx(fieldClass, 'h-11', className)} {...rest} />
 }
 
 export function Textarea({ className, ref, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { ref?: Ref<HTMLTextAreaElement> }) {
-  return <textarea ref={ref} className={cx(field, 'py-2.5', className)} {...rest} />
+  return <textarea ref={ref} className={cx(fieldClass, 'py-2.5', className)} {...rest} />
 }
 
 export function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) {
@@ -88,39 +89,46 @@ export function Field({ label, hint, children }: { label: string; hint?: ReactNo
   )
 }
 
-export function Avatar({ name, size = 40, className }: { name: string; size?: number; className?: string }) {
-  const initials =
-    name
-      .trim()
-      .split(/\s+/)
-      .slice(0, 2)
-      .map((w) => [...w][0]?.toUpperCase() ?? '')
-      .join('') || '?'
+/** The first letters of the first two words, or "?" for a blank name. */
+function initialsOf(name: string): string {
+  const words = name.trim().split(/\s+/).slice(0, 2)
+  let initials = ''
+  // [...word] splits by code point, so an emoji's two UTF-16 halves stay together.
+  for (const word of words) initials += [...word][0]?.toUpperCase() ?? ''
+  return initials || '?'
+}
+
+/** The same name always gets the same colour. */
+function hueOf(name: string): number {
   let hue = 0
-  for (const ch of name) hue = (hue * 31 + ch.codePointAt(0)!) % 360
+  for (const char of name) hue = (hue * 31 + char.codePointAt(0)!) % 360
+  return hue
+}
+
+export function Avatar({ name, size = 40, className }: { name: string; size?: number; className?: string }) {
   return (
     <span
       aria-hidden
       className={cx('avatar', className)}
-      style={{ '--h': hue, width: size, height: size, fontSize: size * 0.38 } as CSSProperties}
+      style={{ '--h': hueOf(name), width: size, height: size, fontSize: size * 0.38 } as CSSProperties}
     >
-      {initials}
+      {initialsOf(name)}
     </span>
   )
 }
 
 export function Chip({ children, active, onClick }: { children: ReactNode; active?: boolean; onClick?: () => void }) {
-  const cls = cx(
+  const chipClass = cx(
     'inline-flex h-8 shrink-0 items-center rounded-full px-3 text-sm whitespace-nowrap transition',
     active ? 'bg-ink text-bg' : 'bg-surface-2 text-ink',
     onClick && 'hover:brightness-95',
   )
   return onClick ? (
-    <button type="button" onClick={onClick} className={cls} aria-pressed={active}>
+    <button type="button" onClick={onClick} className={chipClass} aria-pressed={active}>
       {children}
     </button>
   ) : (
-    <span className={cls}>{children}</span>
+    <span className={chipClass}>{children}</span>
   )
 }
 
@@ -176,14 +184,18 @@ type SheetProps = {
 
 /** A bottom sheet on phones, a dialog on wider screens. Children mount only while open, so each opening starts fresh. */
 export function Sheet({ open, onClose, title, children, actions }: SheetProps) {
-  const ref = useRef<HTMLDialogElement>(null)
+  const dialogRef = useRef<HTMLDialogElement>(null)
   useEffect(() => {
-    const d = ref.current
-    if (open && d && !d.open) d.showModal()
-    if (!open && d?.open) d.close()
+    const dialog = dialogRef.current
+    if (open && dialog && !dialog.open) dialog.showModal()
+    if (!open && dialog?.open) dialog.close()
   }, [open])
+  // A click whose target is the dialog itself landed on the backdrop, outside the panel.
+  const closeOnBackdropClick = (e: ReactMouseEvent<HTMLDialogElement>) => {
+    if (e.target === dialogRef.current) onClose()
+  }
   return (
-    <dialog ref={ref} className="sheet" onClose={onClose} onClick={(e) => e.target === ref.current && onClose()}>
+    <dialog ref={dialogRef} className="sheet" onClose={onClose} onClick={closeOnBackdropClick}>
       {open && (
         <div className="sheet-panel">
           <header className="flex shrink-0 items-center gap-1 py-2 pr-2 pl-5">
@@ -203,20 +215,24 @@ export function Sheet({ open, onClose, title, children, actions }: SheetProps) {
 // ─── Toasts ────────────────────────────────────────────────────────────
 
 type ToastMsg = { id: number; text: string; tone: 'info' | 'error' }
-const toastListeners = new Set<(t: ToastMsg) => void>()
-let toastSeq = 0
+const toastListeners = new Set<(message: ToastMsg) => void>()
+let lastToastId = 0
+const MAX_TOASTS = 3
+const ERROR_TOAST_MS = 5000
+const INFO_TOAST_MS = 2600
 
 export function toast(text: string, tone: ToastMsg['tone'] = 'info') {
-  const t = { id: ++toastSeq, text, tone }
-  toastListeners.forEach((l) => l(t))
+  const message = { id: ++lastToastId, text, tone }
+  for (const listener of toastListeners) listener(message)
 }
 
-/** Browsers report "can't reach the server" as a TypeError with their own wording. */
+/** How browsers word "couldn't reach the server": each throws a TypeError with its own message. */
+const OFFLINE_ERROR = /failed to fetch|load failed|networkerror|network request failed/i
+
 export function errorMessage(e: unknown): string {
-  const msg = e instanceof Error ? e.message : String(e)
-  return /failed to fetch|load failed|networkerror|network request failed/i.test(msg)
-    ? "Can't reach the server. Check your connection and try again."
-    : msg
+  const message = e instanceof Error ? e.message : String(e)
+  if (OFFLINE_ERROR.test(message)) return "Can't reach the server. Check your connection and try again."
+  return message
 }
 
 export const toastError = (e: unknown) => toast(errorMessage(e), 'error')
@@ -224,12 +240,15 @@ export const toastError = (e: unknown) => toast(errorMessage(e), 'error')
 function useToasts(): ToastMsg[] {
   const [items, setItems] = useState<ToastMsg[]>([])
   useEffect(() => {
-    const show = (t: ToastMsg) => {
-      setItems((xs) => [...xs.slice(-2), t])
-      setTimeout(() => setItems((xs) => xs.filter((x) => x.id !== t.id)), t.tone === 'error' ? 5000 : 2600)
+    const show = (message: ToastMsg) => {
+      setItems((shown) => [...shown, message].slice(-MAX_TOASTS))
+      const showForMs = message.tone === 'error' ? ERROR_TOAST_MS : INFO_TOAST_MS
+      setTimeout(() => setItems((shown) => shown.filter((x) => x.id !== message.id)), showForMs)
     }
     toastListeners.add(show)
-    return () => void toastListeners.delete(show)
+    return () => {
+      toastListeners.delete(show)
+    }
   }, [])
   return items
 }
@@ -246,12 +265,12 @@ export function Toaster() {
   }, [items])
   return (
     <div ref={ref} popover="manual" className="toaster" role="status" aria-live="polite">
-      {items.map((t) => (
+      {items.map((message) => (
         <div
-          key={t.id}
-          className={cx('rounded-full px-4 py-2.5 text-sm font-medium shadow-lg', t.tone === 'error' ? 'bg-danger text-white' : 'bg-ink text-bg')}
+          key={message.id}
+          className={cx('rounded-full px-4 py-2.5 text-sm font-medium shadow-lg', message.tone === 'error' ? 'bg-danger text-white' : 'bg-ink text-bg')}
         >
-          {t.text}
+          {message.text}
         </div>
       ))}
     </div>

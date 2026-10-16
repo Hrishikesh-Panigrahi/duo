@@ -34,7 +34,7 @@ Tests that need WebCrypto use Node's built-in `crypto.subtle`. Nothing here talk
 - refusing signals with a future timestamp (only past ones are tested);
 - the room's `private: true` flag (the test's fake channel ignores options);
 - the send refusal in `prepareMedia` and the `application/octet-stream` fallback in `openMedia`;
-- that the write paths (`Records`, `*-actions.ts`) send only ciphertext;
+- that the write paths (`RowWriter`, `*-actions.ts`) send only ciphertext;
 - `upgradeLegacy` and its upgrade flag, and `useForgetMismatchedKey`;
 - non-extractable keys, and sign-out clearing `duo-keys` and `duo-inbox`;
 - the context strings themselves (only the `v1:` prefix is pinned);

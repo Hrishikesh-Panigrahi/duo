@@ -7,8 +7,8 @@ export type Nav = {
   setTab: (t: Tab) => void
   /** Switches to Contacts and opens this contact. */
   openContact: (id: string) => void
-  focusContactId: string | null
-  clearFocusContact: () => void
+  contactIdToOpen: string | null
+  clearContactIdToOpen: () => void
 }
 
 export const NavContext = createContext<Nav | null>(null)

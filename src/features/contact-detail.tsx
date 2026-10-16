@@ -4,17 +4,17 @@ import { Cake, Download, Mail, MapPin, MessageSquare, Pencil, Phone, QrCode, Sen
 import { useAuthorName, useSpace } from '../lib/store'
 import { toCard, type Contact } from '../lib/types'
 import { downloadVCard, shareVCard, toVCard, type ContactCard } from '../lib/vcard'
-import { formatDay, nextBirthday, relativeDays, todayYMD } from '../lib/dates'
+import { formatDay, nextBirthday, relativeDays, toLocalYMD } from '../lib/dates'
 import { Avatar, Button, IconButton, Sheet, cx, toast, toastError } from '../components/ui'
 import { useBusy } from '../components/use-busy'
 
-const dial = (p: string) => p.replace(/[^\d+]/g, '')
+const dialable = (phone: string) => phone.replace(/[^\d+]/g, '')
 
 /** wa.me needs a full international number; only offer WhatsApp when we have one. */
-function whatsappNumber(p: string): string | null {
-  const d = dial(p)
-  if (d.startsWith('+')) return d.slice(1)
-  if (d.startsWith('00')) return d.slice(2)
+function whatsappNumber(phone: string): string | null {
+  const digits = dialable(phone)
+  if (digits.startsWith('+')) return digits.slice(1)
+  if (digits.startsWith('00')) return digits.slice(2)
   return null
 }
 
@@ -49,93 +49,93 @@ function FavouriteButton({ contact }: { contact: Contact }) {
   )
 }
 
-function ContactDetail({ contact: c, onClose }: { contact: Contact; onClose: () => void }) {
+function ContactDetail({ contact, onClose }: { contact: Contact; onClose: () => void }) {
   const authorName = useAuthorName()
   const [showQr, setShowQr] = useState(false)
   return (
     <div>
       <div className="flex flex-col items-center text-center">
-        <Avatar name={c.full_name} size={76} />
-        <h2 className="mt-3 text-2xl font-bold tracking-tight">{c.full_name}</h2>
-        {c.company && <p className="text-muted">{c.company}</p>}
+        <Avatar name={contact.full_name} size={76} />
+        <h2 className="mt-3 text-2xl font-bold tracking-tight">{contact.full_name}</h2>
+        {contact.company && <p className="text-muted">{contact.company}</p>}
       </div>
-      <QuickActions contact={c} />
-      <ContactInfo contact={c} />
-      <p className="mt-2 text-center text-xs text-muted">Added by {authorName(c.created_by)}</p>
-      {showQr && <QrBlock card={toCard(c)} />}
-      <ContactButtons contact={c} showQr={showQr} onToggleQr={() => setShowQr((s) => !s)} onDeleted={onClose} />
+      <QuickActions contact={contact} />
+      <ContactInfo contact={contact} />
+      <p className="mt-2 text-center text-xs text-muted">Added by {authorName(contact.created_by)}</p>
+      {showQr && <QrBlock card={toCard(contact)} />}
+      <ContactButtons contact={contact} showQr={showQr} onToggleQr={() => setShowQr((s) => !s)} onDeleted={onClose} />
     </div>
   )
 }
 
-function QuickActions({ contact: c }: { contact: Contact }) {
-  const phone = c.phones[0]
-  const wa = phone ? whatsappNumber(phone) : null
+function QuickActions({ contact }: { contact: Contact }) {
+  const phone = contact.phones[0]
+  const whatsapp = phone ? whatsappNumber(phone) : null
   return (
     <div className="mt-5 grid grid-cols-4 gap-2">
-      <QuickAction href={phone ? `tel:${dial(phone)}` : null} icon={<Phone />} label="Call" />
-      <QuickAction href={phone ? `sms:${dial(phone)}` : null} icon={<MessageSquare />} label="Text" />
-      <QuickAction href={wa ? `https://wa.me/${wa}` : null} icon={<Smartphone />} label="WhatsApp" />
-      <QuickAction href={c.emails[0] ? `mailto:${c.emails[0]}` : null} icon={<Mail />} label="Email" />
+      <QuickAction href={phone ? `tel:${dialable(phone)}` : null} icon={<Phone />} label="Call" />
+      <QuickAction href={phone ? `sms:${dialable(phone)}` : null} icon={<MessageSquare />} label="Text" />
+      <QuickAction href={whatsapp ? `https://wa.me/${whatsapp}` : null} icon={<Smartphone />} label="WhatsApp" />
+      <QuickAction href={contact.emails[0] ? `mailto:${contact.emails[0]}` : null} icon={<Mail />} label="Email" />
     </div>
   )
 }
 
 function QuickAction({ href, icon, label }: { href: string | null; icon: ReactNode; label: string }) {
-  const cls = 'flex flex-col items-center gap-1 rounded-xl bg-surface-2 py-2.5 text-xs font-medium [&_svg]:size-5'
+  const quickActionClass = 'flex flex-col items-center gap-1 rounded-xl bg-surface-2 py-2.5 text-xs font-medium [&_svg]:size-5'
   if (!href) {
     return (
-      <span className={cx(cls, 'opacity-35')} aria-disabled>
+      <span className={cx(quickActionClass, 'opacity-35')} aria-disabled>
         {icon}
         {label}
       </span>
     )
   }
   return (
-    <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer" className={cx(cls, 'text-accent hover:brightness-95')}>
+    <a href={href} target={href.startsWith('http') ? '_blank' : undefined} rel="noreferrer" className={cx(quickActionClass, 'text-accent hover:brightness-95')}>
       {icon}
       {label}
     </a>
   )
 }
 
-function ContactInfo({ contact: c }: { contact: Contact }) {
-  const mapUrl = c.address && `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(c.address)}`
+function ContactInfo({ contact }: { contact: Contact }) {
+  const mapUrl = contact.address && `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(contact.address)}`
   return (
     <div className="mt-4 divide-y divide-line overflow-hidden rounded-2xl bg-surface-2/60">
-      <PhonesAndEmails contact={c} />
-      {c.birthday && <BirthdayRow birthday={c.birthday} />}
+      <PhonesAndEmails contact={contact} />
+      {contact.birthday && <BirthdayRow birthday={contact.birthday} />}
       {mapUrl && (
         <InfoRow icon={<MapPin />} label="Address">
           <a href={mapUrl} target="_blank" rel="noreferrer" className="whitespace-pre-line text-accent">
-            {c.address}
+            {contact.address}
           </a>
         </InfoRow>
       )}
-      {c.notes && (
+      {contact.notes && (
         <InfoRow icon={<StickyNote />} label="Notes">
-          <span className="whitespace-pre-line">{c.notes}</span>
+          <span className="whitespace-pre-line">{contact.notes}</span>
         </InfoRow>
       )}
-      {c.tags.length > 0 && <InfoRow icon={<Tag />} label="Tags">{c.tags.join(', ')}</InfoRow>}
+      {contact.tags.length > 0 && <InfoRow icon={<Tag />} label="Tags">{contact.tags.join(', ')}</InfoRow>}
     </div>
   )
 }
 
-function PhonesAndEmails({ contact: c }: { contact: Contact }) {
+function PhonesAndEmails({ contact }: { contact: Contact }) {
   return (
     <>
-      {c.phones.map((p, i) => (
-        <InfoRow key={`p${i}`} icon={<Phone />} label={c.phones.length > 1 ? `Phone ${i + 1}` : 'Phone'}>
-          <a href={`tel:${dial(p)}`} className="text-accent">
-            {p}
+      {contact.phones.map((phone, i) => (
+        <InfoRow key={`p${i}`} icon={<Phone />} label={contact.phones.length > 1 ? `Phone ${i + 1}` : 'Phone'}>
+          <a href={`tel:${dialable(phone)}`} className="text-accent">
+            {phone}
           </a>
         </InfoRow>
       ))}
-      {c.emails.map((e, i) => (
+      {contact.emails.map((email, i) => (
         <InfoRow key={`e${i}`} icon={<Mail />} label="Email">
-          <a href={`mailto:${e}`} className="text-accent">
-            {e}
+          <a href={`mailto:${email}`} className="text-accent">
+            {email}
           </a>
         </InfoRow>
       ))}
@@ -144,7 +144,7 @@ function PhonesAndEmails({ contact: c }: { contact: Contact }) {
 }
 
 function BirthdayRow({ birthday }: { birthday: string }) {
-  const next = nextBirthday(birthday, todayYMD())
+  const next = nextBirthday(birthday, toLocalYMD())
   return (
     <InfoRow icon={<Cake />} label="Birthday">
       {formatDay(birthday)}
@@ -173,31 +173,31 @@ function InfoRow({ icon, label, children }: { icon: ReactNode; label: string; ch
 
 type ContactButtonsProps = { contact: Contact; showQr: boolean; onToggleQr: () => void; onDeleted: () => void }
 
-function ContactButtons({ contact: c, showQr, onToggleQr, onDeleted }: ContactButtonsProps) {
+function ContactButtons({ contact, showQr, onToggleQr, onDeleted }: ContactButtonsProps) {
   const { actions, partner } = useSpace()
   const sending = useBusy({ toast: true })
-  const card = toCard(c)
+  const card = toCard(contact)
   async function send() {
     await actions.chat.send({ contact: card })
     toast(`Sent to ${partner?.display_name ?? 'chat'}`)
   }
   return (
     <div className="mt-5 space-y-2">
-      <Button className="w-full" icon={<Send />} loading={sending.busy} disabled={!partner} onClick={() => sending.run(send, { settle: true })}>
+      <Button className="w-full" icon={<Send />} loading={sending.busy} disabled={!partner} onClick={() => sending.run(send, { idleAfterSuccess: true })}>
         Send to {partner?.display_name ?? 'your person'}
       </Button>
       <ShareButtons card={card} showQr={showQr} onToggleQr={onToggleQr} />
-      <DeleteContactButton contact={c} onDeleted={onDeleted} />
+      <DeleteContactButton contact={contact} onDeleted={onDeleted} />
     </div>
   )
 }
 
-function DeleteContactButton({ contact: c, onDeleted }: { contact: Contact; onDeleted: () => void }) {
+function DeleteContactButton({ contact, onDeleted }: { contact: Contact; onDeleted: () => void }) {
   const { actions } = useSpace()
   async function remove() {
-    if (!confirm(`Delete ${c.full_name} for both of you?`)) return
+    if (!confirm(`Delete ${contact.full_name} for both of you?`)) return
     try {
-      await actions.contacts.remove(c.id)
+      await actions.contacts.remove(contact.id)
       onDeleted()
       toast('Contact deleted')
     } catch (e) {

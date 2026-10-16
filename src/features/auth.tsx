@@ -11,8 +11,8 @@ export function useAuth() {
   const [session, setSession] = useState<Session | null | undefined>(undefined)
   const [recovering, setRecovering] = useState(false)
   useEffect(() => {
-    const { data } = supabase.auth.onAuthStateChange((event, s) => {
-      setSession(s)
+    const { data } = supabase.auth.onAuthStateChange((event, newSession) => {
+      setSession(newSession)
       if (event === 'PASSWORD_RECOVERY') setRecovering(true)
     })
     return () => data.subscription.unsubscribe()
@@ -43,10 +43,12 @@ export function SignOutLink() {
   )
 }
 
-type Mode = 'signin' | 'signup' | 'forgot'
+type AuthMode = 'signin' | 'signup' | 'forgot'
+
+const SUBMIT_LABEL: Record<AuthMode, string> = { signin: 'Sign in', signup: 'Create account', forgot: 'Send reset link' }
 
 /** Does what the form is for. Returns a notice to show (then it's back to signing in), or null. */
-async function submitAuth(mode: Mode, email: string, password: string): Promise<string | null> {
+async function submitAuth(mode: AuthMode, email: string, password: string): Promise<string | null> {
   if (mode === 'signin') {
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     if (error) throw error
@@ -62,8 +64,8 @@ async function submitAuth(mode: Mode, email: string, password: string): Promise<
   return data.session ? null : 'Check your inbox and tap the confirmation link, then sign in here.'
 }
 
-function useAuthForm(initial: Mode) {
-  const [mode, setMode] = useState<Mode>(initial)
+function useAuthForm(initial: AuthMode) {
+  const [mode, setMode] = useState<AuthMode>(initial)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [notice, setNotice] = useState<string | null>(null)
@@ -72,14 +74,14 @@ function useAuthForm(initial: Mode) {
     e.preventDefault()
     setNotice(null)
     void run(async () => {
-      const said = await submitAuth(mode, email, password)
-      if (!said) return
-      setNotice(said)
+      const noticeToShow = await submitAuth(mode, email, password)
+      if (!noticeToShow) return
+      setNotice(noticeToShow)
       setMode('signin')
-    }, { settle: true })
+    }, { idleAfterSuccess: true })
   }
-  function switchTo(m: Mode) {
-    setMode(m)
+  function switchTo(next: AuthMode) {
+    setMode(next)
     setError(null)
   }
   return { mode, email, setEmail, password, setPassword, notice, busy, error, submit, switchTo }
@@ -103,7 +105,7 @@ export function AuthScreen() {
         {form.error && <p className="text-sm text-danger">{form.error}</p>}
         {form.notice && <p className="rounded-xl bg-accent-soft px-3.5 py-2.5 text-sm">{form.notice}</p>}
         <Button type="submit" loading={form.busy} className="w-full">
-          {form.mode === 'signin' ? 'Sign in' : form.mode === 'signup' ? 'Create account' : 'Send reset link'}
+          {SUBMIT_LABEL[form.mode]}
         </Button>
       </form>
       <ModeLinks mode={form.mode} onSwitch={form.switchTo} />
@@ -111,7 +113,7 @@ export function AuthScreen() {
   )
 }
 
-function PasswordField({ mode, value, onChange }: { mode: Mode; value: string; onChange: (password: string) => void }) {
+function PasswordField({ mode, value, onChange }: { mode: AuthMode; value: string; onChange: (password: string) => void }) {
   return (
     <Field label="Password" hint={mode === 'signup' ? 'At least 6 characters.' : undefined}>
       <Input
@@ -126,7 +128,7 @@ function PasswordField({ mode, value, onChange }: { mode: Mode; value: string; o
   )
 }
 
-function ModeLinks({ mode, onSwitch }: { mode: Mode; onSwitch: (m: Mode) => void }) {
+function ModeLinks({ mode, onSwitch }: { mode: AuthMode; onSwitch: (next: AuthMode) => void }) {
   if (mode !== 'signin') {
     return (
       <div className="mt-6 flex flex-col items-center gap-2 text-sm">
@@ -152,20 +154,18 @@ export function NewPasswordScreen({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState('')
   const { busy, error, run } = useBusy()
   async function save() {
-    const { error } = await supabase.auth.updateUser({ password })
-    if (error) throw error
+    const { error: updateError } = await supabase.auth.updateUser({ password })
+    if (updateError) throw updateError
     toast('Password updated')
     onDone()
   }
+  function submit(e: FormEvent) {
+    e.preventDefault()
+    void run(save, { idleAfterSuccess: true })
+  }
   return (
     <AuthLayout subtitle="Choose a new password.">
-      <form
-        onSubmit={(e) => {
-          e.preventDefault()
-          void run(save, { settle: true })
-        }}
-        className="space-y-4"
-      >
+      <form onSubmit={submit} className="space-y-4">
         <Field label="New password">
           <Input type="password" autoComplete="new-password" required minLength={6} value={password} onChange={(e) => setPassword(e.target.value)} />
         </Field>

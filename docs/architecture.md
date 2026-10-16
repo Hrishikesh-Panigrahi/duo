@@ -37,15 +37,15 @@ the result. `shapes.ts` is used by `view.ts`.
 | `plaintext.ts` | A cache of decrypted values, keyed by `context|cipher`, so each ciphertext is opened once. |
 | `view.ts` | `pendingDecryptions` lists what still needs opening, and checks each result against `shapes`. `deriveView` turns rows and plaintext into what screens show. |
 | `shapes.ts` | The shape each decrypted record must have. Anything else counts as undecryptable. |
-| `records.ts` | `Records`: `seal`, `insertSealed`, `updateSealed`. `StoreActions` is the base class for every action group. |
+| `store-actions.ts` | `RowWriter`: `seal`, `insertSealed`, `updateSealed`, `deleteRow`, and `upsertLocally` / `removeLocally` for this device's copy only. `StoreActions` is the base class for every action group. |
 | `*-actions.ts` | `useSpace().actions.chat / contacts / notes / lists / names / encryption`. |
 | `room.ts` | `Room`: the private Realtime channel `room:<space id>` for presence, typing and sealed WebRTC signalling. `PresenceGate` throttles presence. |
 
 ## Writing rows
 
-- **New rows:** `Records.insertSealed` seals the content under the row's `contexts.*` string and remembers the
+- **New rows:** `RowWriter.insertSealed` seals the content under the row's `contexts.*` string and remembers the
   plaintext, so the new row needs no decryption. It then inserts the row, and upserts what the server returns.
-- **Edits:** `Records.updateSealed` upserts the change straight away and rolls it back if the server refuses it.
+- **Edits:** `RowWriter.updateSealed` upserts the change straight away and rolls it back if the server refuses it.
 - **Messages:** these go through `ChatActions.sendContent` instead. It calls `encryptMessage`, shows a pending row,
   inserts, then confirms. Message inserts may only set `id, space_id, cipher, has_media, media_direct`; the server
   sets the sender and the time.
@@ -96,7 +96,7 @@ Other devices get each change over Realtime and decrypt it themselves.
   `<space id>/<message id>`, declared as `application/octet-stream`.
 - **Opening:** the receiver decrypts the file. The blob gets the sender's type only if it matches `PLAYABLE_TYPE`,
   otherwise `application/octet-stream`.
-- **Deleting:** when the recipient opens a file, `finishMedia` deletes it, then calls `mark_media_opened`. Each
+- **Deleting:** when the recipient opens a file, `deleteViewedMedia` deletes it, then calls `mark_media_opened`. Each
   time the main screen opens (`ShellReady` mounts), `sweepMedia` also removes files whose loaded message was opened
   or is more than 3 days old.
   - A Storage file with no loaded message is removed once the file itself is more than 3 days old. Only the first

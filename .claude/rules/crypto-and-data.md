@@ -14,7 +14,7 @@ See [docs/security.md](../../docs/security.md) for the rules and which tests cov
 - A new context includes the space id, plus the row id for rows (and the sender for messages and media).
 
 **Writing and reading content**
-- New content is written through `Records` (`seal`, `insertSealed`, `updateSealed`), or through
+- New content is written through `RowWriter` (`seal`, `insertSealed`, `updateSealed`), or through
   `encryptMessage` / `encryptBytes` for messages and files. Never write a plaintext column.
 - Every record type the screens show gets a `shapes.*` entry, used in `pendingDecryptions` (`view.ts`). Signals
   get no shape check: `room.ts` checks the timestamp and `direct.ts` the addressing, and the SDP and ICE data go to

@@ -11,6 +11,7 @@ export const PRESENCE_WINDOW_MS = 30_000
 export const PRESENCE_MAX_PER_WINDOW = 4
 export const TYPING_EVERY_MS = 2500
 const MAX_REJOIN_DELAY_MS = 30_000
+const MAX_SEALED_SIGNAL_LENGTH = 64_000
 
 type SealedSignal = { signal: Signal; at: number }
 
@@ -50,10 +51,10 @@ export type RoomOptions = {
 export class PresenceGate {
   private announced: string | null = null
   private wanted: string | null = null
-  private sent: number[] = []
+  private sentAt: number[] = []
   private timer: ReturnType<typeof setTimeout> | undefined
 
-  constructor(private readonly o: { send: (state: string | null) => void; canSend: () => boolean }) {}
+  constructor(private readonly transport: { send: (state: string | null) => void; canSend: () => boolean }) {}
 
   /** A JSON payload, or null for "not here". The latest one always gets through. */
   want(state: string | null) {
@@ -72,72 +73,79 @@ export class PresenceGate {
 
   private flush() {
     clearTimeout(this.timer)
-    if (!this.o.canSend() || this.wanted === this.announced) return
+    if (!this.transport.canSend() || this.wanted === this.announced) return
     const now = Date.now()
-    this.sent = this.sent.filter((at) => now - at < PRESENCE_WINDOW_MS)
-    if (this.sent.length >= PRESENCE_MAX_PER_WINDOW) {
-      this.timer = setTimeout(() => this.flush(), PRESENCE_WINDOW_MS - (now - this.sent[0]) + 100)
+    this.sentAt = this.sentAt.filter((at) => now - at < PRESENCE_WINDOW_MS)
+    if (this.sentAt.length >= PRESENCE_MAX_PER_WINDOW) {
+      // Tries again just after the oldest send leaves the window.
+      const oldestSendAt = this.sentAt[0]
+      const retryInMs = PRESENCE_WINDOW_MS - (now - oldestSendAt) + 100
+      this.timer = setTimeout(() => this.flush(), retryInMs)
       return
     }
-    this.sent.push(now)
+    this.sentAt.push(now)
     this.announced = this.wanted
-    this.o.send(this.wanted)
+    this.transport.send(this.wanted)
   }
 }
 
 // Until a leave finishes, the old channel still owns the name, so the next join waits for it.
-let leaving: Promise<unknown> = Promise.resolve()
+let previousLeave: Promise<unknown> = Promise.resolve()
 
-async function freeName(rt: RealtimeClient, name: string) {
-  await leaving
+async function releaseRoomName(realtime: RealtimeClient, name: string) {
+  await previousLeave
   // A leave that timed out (say, offline) leaves the dead channel registered; clear it once more.
-  const leftover = rt.getChannels().find((c) => c.topic === `realtime:${name}`)
-  if (leftover) await rt.removeChannel(leftover as RoomChannel)
+  const leftover = realtime.getChannels().find((c) => c.topic === `realtime:${name}`)
+  if (leftover) await realtime.removeChannel(leftover as RoomChannel)
 }
 
 export class Room {
-  private readonly rt: RealtimeClient
+  private readonly realtime: RealtimeClient
   private readonly name: string
   private readonly link: DirectLink
   private readonly presence: PresenceGate
   private channel: RoomChannel | null = null
   private subscribed = false
   private alive = true
-  private rejoins = 0
+  private rejoinAttempts = 0
   private rejoinTimer: ReturnType<typeof setTimeout> | undefined
   private partnerDirect = false
   private lastTyping = 0
 
-  constructor(private readonly o: RoomOptions) {
-    this.rt = o.realtime ?? (supabase as unknown as RealtimeClient)
-    this.name = `room:${o.spaceId}`
-    this.link = (o.createLink ?? ((options) => new DirectLink(options)))({
-      selfId: o.userId,
+  constructor(private readonly options: RoomOptions) {
+    this.realtime = options.realtime ?? (supabase as unknown as RealtimeClient)
+    this.name = `room:${options.spaceId}`
+    const createLink = options.createLink ?? ((linkOptions) => new DirectLink(linkOptions))
+    this.link = createLink({
+      selfId: options.userId,
       sendSignal: (signal) => this.sendSignal(signal),
-      acceptFrom: o.isPartner,
-      onFile: o.onFile,
+      acceptFrom: options.isPartner,
+      onFile: options.onFile,
     })
     this.presence = new PresenceGate({
       canSend: () => this.channel !== null && this.subscribed,
-      send: (state) => void (state ? this.channel?.track(JSON.parse(state) as Record<string, unknown>) : this.channel?.untrack()),
+      send: (state) => {
+        if (state) void this.channel?.track(JSON.parse(state) as Record<string, unknown>)
+        else void this.channel?.untrack()
+      },
     })
-    void freeName(this.rt, this.name).then(() => this.open())
+    void releaseRoomName(this.realtime, this.name).then(() => this.join())
   }
 
   /** Visibility or this device's key changed. "Online" means the app is open in front of you. */
   syncPresence() {
     if (!this.channel || !this.subscribed) return
-    const visible = this.o.isVisible?.() ?? document.visibilityState === 'visible'
-    const direct = typeof RTCPeerConnection !== 'undefined' && this.o.getKey() !== null
+    const visible = this.options.isVisible?.() ?? document.visibilityState === 'visible'
+    const direct = typeof RTCPeerConnection !== 'undefined' && this.options.getKey() !== null
     this.presence.want(visible ? JSON.stringify({ direct }) : null)
   }
 
   /** Throttled "is typing" ping to the other person. */
-  typing() {
+  sendTyping() {
     const now = Date.now()
     if (now - this.lastTyping < TYPING_EVERY_MS) return
     this.lastTyping = now
-    void this.channel?.send({ type: 'broadcast', event: 'typing', payload: { user_id: this.o.userId } })
+    void this.channel?.send({ type: 'broadcast', event: 'typing', payload: { user_id: this.options.userId } })
   }
 
   /** Your person's app is open, unlocked, and can take a file directly. */
@@ -156,63 +164,64 @@ export class Room {
     clearTimeout(this.rejoinTimer)
     this.link.close()
     this.partnerDirect = false
-    if (this.channel) leaving = this.rt.removeChannel(this.channel)
+    if (this.channel) previousLeave = this.realtime.removeChannel(this.channel)
     this.channel = null
   }
 
-  private open() {
+  private join() {
     if (!this.alive) return
-    const ch = this.rt.channel(this.name, { config: { private: true, presence: { key: this.o.userId } } })
-    this.channel = ch
+    const channel = this.realtime.channel(this.name, { config: { private: true, presence: { key: this.options.userId } } })
+    this.channel = channel
     this.presence.reset()
-    ch.on('presence', { event: 'sync' }, () => this.updatePartner(ch))
-    ch.on('broadcast', { event: 'typing' }, ({ payload }) => {
-      if (payload?.user_id !== this.o.userId) this.o.onTyping()
+    channel.on('presence', { event: 'sync' }, () => this.updatePartner(channel))
+    channel.on('broadcast', { event: 'typing' }, ({ payload }) => {
+      if (payload?.user_id !== this.options.userId) this.options.onTyping()
     })
-    ch.on('broadcast', { event: 'signal' }, ({ payload }) => this.receiveSignal(payload?.s))
-    ch.subscribe((status) => this.onStatus(ch, status))
+    channel.on('broadcast', { event: 'signal' }, ({ payload }) => this.receiveSignal(payload?.s))
+    channel.subscribe((status) => this.onStatus(channel, status))
   }
 
-  private updatePartner(ch: RoomChannel) {
-    const others = Object.entries(ch.presenceState()).filter(([key]) => key !== this.o.userId)
-    this.partnerDirect = others.some(([, metas]) => metas.some((m) => m.direct === true))
-    this.o.onPartner({ online: others.length > 0, direct: this.partnerDirect })
+  private updatePartner(channel: RoomChannel) {
+    const others = Object.entries(channel.presenceState()).filter(([userId]) => userId !== this.options.userId)
+    this.partnerDirect = others.some(([, presences]) => presences.some((presence) => presence.direct === true))
+    this.options.onPartner({ online: others.length > 0, direct: this.partnerDirect })
   }
 
-  private onStatus(ch: RoomChannel, status: string) {
-    if (this.channel !== ch) return
-    if (status !== 'SUBSCRIBED') return this.rejoin(ch)
+  private onStatus(channel: RoomChannel, status: string) {
+    if (this.channel !== channel) return
+    if (status !== 'SUBSCRIBED') return this.rejoin(channel)
     this.subscribed = true
-    this.rejoins = 0
+    this.rejoinAttempts = 0
     this.syncPresence()
   }
 
   /** The server dropped the room (a rate limit, an expired session, a network change); backs off. */
-  private rejoin(ch: RoomChannel) {
+  private rejoin(channel: RoomChannel) {
     this.subscribed = false
     this.partnerDirect = false
     if (!this.alive) return
-    this.o.onPartner({ online: false, direct: false })
+    this.options.onPartner({ online: false, direct: false })
     this.channel = null
-    leaving = this.rt.removeChannel(ch)
+    previousLeave = this.realtime.removeChannel(channel)
     clearTimeout(this.rejoinTimer)
-    const delay = Math.min(MAX_REJOIN_DELAY_MS, 1_000 * 2 ** this.rejoins++)
-    this.rejoinTimer = setTimeout(() => void freeName(this.rt, this.name).then(() => this.open()), delay)
+    const delay = Math.min(MAX_REJOIN_DELAY_MS, 1_000 * 2 ** this.rejoinAttempts)
+    this.rejoinAttempts++
+    this.rejoinTimer = setTimeout(() => void releaseRoomName(this.realtime, this.name).then(() => this.join()), delay)
   }
 
   private async sendSignal(signal: Signal) {
-    const key = this.o.getKey()
+    const key = this.options.getKey()
     const channel = this.channel
     if (!key || !channel || !this.subscribed) throw new Error('Not connected')
-    const sealed = await encryptRecord(key, contexts.signal(this.o.spaceId), { signal, at: Date.now() } satisfies SealedSignal)
+    const sealed = await encryptRecord(key, contexts.signal(this.options.spaceId), { signal, at: Date.now() } satisfies SealedSignal)
     const res = await channel.send({ type: 'broadcast', event: 'signal', payload: { s: sealed } })
     if (res !== 'ok') throw new Error(`Couldn't reach the other phone (${res})`)
   }
 
   private receiveSignal(sealed: unknown) {
-    const key = this.o.getKey()
-    if (!key || typeof sealed !== 'string' || sealed.length > 64_000) return
-    decryptRecord<SealedSignal>(key, contexts.signal(this.o.spaceId), sealed)
+    const key = this.options.getKey()
+    if (!key || typeof sealed !== 'string' || sealed.length > MAX_SEALED_SIGNAL_LENGTH) return
+    decryptRecord<SealedSignal>(key, contexts.signal(this.options.spaceId), sealed)
       .then(({ signal, at }) => {
         // Anything older is a replay of something recorded earlier.
         if (typeof at === 'number' && Math.abs(Date.now() - at) < SIGNAL_MAX_AGE_MS) this.link.handleSignal(signal)

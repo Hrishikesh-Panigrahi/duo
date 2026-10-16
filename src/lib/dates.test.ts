@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { daysBetween, nextBirthday, relativeDays, todayYMD } from './dates'
+import { daysBetween, nextBirthday, relativeDays, toLocalYMD } from './dates'
 
 describe('daysBetween', () => {
   it('counts calendar days across DST changes and year ends', () => {
@@ -38,8 +38,8 @@ describe('relativeDays', () => {
   })
 })
 
-describe('todayYMD', () => {
+describe('toLocalYMD', () => {
   it('uses the local calendar date', () => {
-    expect(todayYMD(new Date(2026, 0, 2, 23, 30))).toBe('2026-01-02')
+    expect(toLocalYMD(new Date(2026, 0, 2, 23, 30))).toBe('2026-01-02')
   })
 })
