@@ -17,7 +17,10 @@ class FakeChannel implements RoomChannel {
   private onStatus: (s: string) => void = () => {}
   private state: Record<string, { direct?: boolean }[]> = {}
 
-  constructor(readonly topic: string) {}
+  constructor(
+    readonly topic: string,
+    readonly options?: { config: { private: boolean } },
+  ) {}
 
   on(type: string, filter: { event: string }, cb: never) {
     if (type === 'presence') this.presenceListeners.push(cb)
@@ -56,8 +59,8 @@ class FakeChannel implements RoomChannel {
 function fakeRealtime() {
   const channels: FakeChannel[] = []
   const rt: RealtimeClient = {
-    channel(name) {
-      const ch = new FakeChannel(`realtime:${name}`)
+    channel(name, options) {
+      const ch = new FakeChannel(`realtime:${name}`, options)
       channels.push(ch)
       return ch
     },
@@ -154,6 +157,7 @@ describe('the room', () => {
   it('joins privately and says this device can take files, once subscribed', async () => {
     const { channels } = await setUp()
     expect(channels).toHaveLength(1)
+    expect(channels[0].options?.config.private).toBe(true)
     expect(channels[0].presence).toEqual([])
     channels[0].status('SUBSCRIBED')
     expect(channels[0].presence).toEqual([{ direct: true }])
@@ -250,6 +254,7 @@ describe('signalling for direct transfers', () => {
     channels[0].status('SUBSCRIBED')
     const other = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt'])
     channels[0].broadcast('signal', { s: await sealed(Date.now() - 3 * 60_000) }) // recorded earlier
+    channels[0].broadcast('signal', { s: await sealed(Date.now() + 3 * 60_000) }) // dated in the future
     channels[0].broadcast('signal', { s: await sealed(Date.now(), other) }) // not sealed with our key
     const good = await sealed(Date.now())
     const parts = good.split(':')

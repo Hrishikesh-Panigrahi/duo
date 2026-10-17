@@ -45,7 +45,7 @@ describe('direct transfer framing', () => {
   })
 })
 
-// Node has no WebRTC: just enough of a peer connection for an outgoing transfer to start and send its offer.
+// Node has no WebRTC: just enough of a peer connection to send an offer, or to answer one.
 class FakePeerConnection {
   localDescription: { toJSON: () => RTCSessionDescriptionInit } | null = null
   createDataChannel() {
@@ -54,6 +54,11 @@ class FakePeerConnection {
   async createOffer(): Promise<RTCSessionDescriptionInit> {
     return { type: 'offer', sdp: 'fake' }
   }
+  async createAnswer(): Promise<RTCSessionDescriptionInit> {
+    return { type: 'answer', sdp: 'fake' }
+  }
+  async setRemoteDescription() {}
+  async addIceCandidate() {}
   async setLocalDescription(description: RTCSessionDescriptionInit) {
     this.localDescription = { toJSON: () => description }
   }
@@ -90,5 +95,58 @@ describe('ending a direct transfer early', () => {
     await vi.waitFor(() => expect(signals.some((signal) => signal.type === 'offer')).toBe(true))
     link.handleSignal({ session: signals[0].session, from: 'you', to: 'me', type: 'bye' })
     await expect(sent).rejects.toThrow('The other phone stopped the transfer')
+  })
+})
+
+describe('which transfers this phone takes', () => {
+  beforeEach(() => vi.stubGlobal('RTCPeerConnection', FakePeerConnection))
+  afterEach(() => vi.unstubAllGlobals())
+
+  function linkWithOutbox() {
+    const signals: Signal[] = []
+    const link = new DirectLink({
+      selfId: 'me',
+      sendSignal: async (signal) => {
+        signals.push(signal)
+      },
+      acceptFrom: (userId) => userId === 'you',
+      onFile: async () => {},
+    })
+    const answersSent = () => signals.filter((signal) => signal.type === 'answer').length
+    return { link, answersSent }
+  }
+
+  const offer = (session: string, from = 'you', to = 'me') =>
+    ({ type: 'offer', session, from, to, sdp: { type: 'offer', sdp: 'fake' } }) as const
+  // Long enough for an accepted offer to have been answered.
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 20))
+
+  it('answers only an offer addressed to this phone from the other member', async () => {
+    const { link, answersSent } = linkWithOutbox()
+    link.handleSignal(offer('s1', 'you', 'someone-else'))
+    link.handleSignal(offer('s2', 'stranger', 'me'))
+    await settle()
+    expect(answersSent()).toBe(0)
+    link.handleSignal(offer('s3'))
+    await vi.waitFor(() => expect(answersSent()).toBe(1))
+    link.close()
+  })
+
+  it('takes at most four transfers at once', async () => {
+    const { link, answersSent } = linkWithOutbox()
+    for (const session of ['s1', 's2', 's3', 's4', 's5']) link.handleSignal(offer(session))
+    await settle()
+    expect(answersSent()).toBe(4)
+    link.close()
+  })
+
+  it('counts the transfers it is sending towards those four', async () => {
+    const { link, answersSent } = linkWithOutbox()
+    const sending = [1, 2, 3, 4].map(() => link.sendFile('you', id, new Uint8Array(8)).catch(() => {}))
+    link.handleSignal(offer('s1'))
+    await settle()
+    expect(answersSent()).toBe(0)
+    link.close()
+    await Promise.all(sending)
   })
 })
