@@ -1,18 +1,18 @@
 // View-once photos and videos: prepared on the phone, then encrypted and kept only until opened or expired.
-import { MS_PER_DAY } from './dates'
 import type { MediaInfo } from './types'
 
 /** Leaves headroom under the Free plan's 50 MB per-file limit for encryption overhead. */
 export const MAX_MEDIA_BYTES = 45 * 1024 * 1024
 /** Unopened photos and videos are deleted after this long. */
-export const MEDIA_TTL_DAYS = 3
+export const MEDIA_TTL_HOURS = 24
+const MS_PER_HOUR = 60 * 60_000
 const MAX_IMAGE_EDGE = 1600
 const JPEG_QUALITY = 0.82
 
 export const mediaPath = (spaceId: string, messageId: string) => `${spaceId}/${messageId}`
 
 export function isExpired(createdAt: string, now = Date.now()): boolean {
-  return now - new Date(createdAt).getTime() > MEDIA_TTL_DAYS * MS_PER_DAY
+  return now - new Date(createdAt).getTime() > MEDIA_TTL_HOURS * MS_PER_HOUR
 }
 
 /** Size check for a file that's sent as-is. Exported for tests. */

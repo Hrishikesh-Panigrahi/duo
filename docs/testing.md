@@ -26,7 +26,7 @@ node scripts/check-doc-names.cjs  # names in the docs' inline code spans still e
 | `chat-actions.test.ts` | Opening a file whose claimed type isn't a photo or video as a plain download (`application/octet-stream`) |
 | `session.test.ts` | Sign-out wiping this device's keys and waiting photos before ending the session, and still signing out if that fails |
 | `invite.test.ts` | Invite links and codes, and dropping saved invites after two weeks |
-| `media.test.ts` | The video size limit, photo scaling, the 3-day expiry, the `PLAYABLE_TYPE` pattern, refusing to send anything else, storage paths |
+| `media.test.ts` | The video size limit, photo scaling, the 24-hour expiry, the `PLAYABLE_TYPE` pattern, refusing to send anything else, storage paths |
 | `passphrase.test.ts`, `vcard.test.ts`, `dates.test.ts`, `supabase.test.ts` | Passphrase strength; vCard import and export; day counting, birthdays and relative-day labels; error messages |
 
 Tests that need WebCrypto use Node's built-in `crypto.subtle`. Nothing here talks to Supabase.

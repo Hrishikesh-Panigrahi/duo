@@ -98,10 +98,10 @@ Other devices get each change over Realtime and decrypt it themselves.
   otherwise `application/octet-stream`.
 - **Deleting:** when the recipient opens a file, `deleteViewedMedia` deletes it, then calls `mark_media_opened`. Each
   time the main screen opens (`ShellReady` mounts), `sweepMedia` also removes files whose loaded message was opened
-  or is more than 3 days old.
-  - A Storage file with no loaded message is removed once the file itself is more than 3 days old. Only the first
+  or is more than 24 hours old.
+  - A Storage file with no loaded message is removed once the file itself is more than 24 hours old. Only the first
     1000 files are listed.
-  - An inbox file with no loaded message is removed once it's more than 3 days old, or more than 10 minutes old and
+  - An inbox file with no loaded message is removed once it's more than 24 hours old, or more than 10 minutes old and
     newer than the oldest loaded message.
 
   Nothing on the server deletes or expires files, and the read policy doesn't check age.

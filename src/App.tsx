@@ -81,7 +81,7 @@ function NotConfigured() {
     <AuthLayout subtitle="Almost there: connect your Supabase project.">
       <ol className="list-decimal space-y-3 pl-5 text-sm">
         <li>
-          Run <code className="rounded bg-surface-2 px-1">supabase/migrations/…_init.sql</code> in your project's SQL editor.
+          Run every file in <code className="rounded bg-surface-2 px-1">supabase/migrations/</code>, in order, in your project's SQL editor.
         </li>
         <li>
           Copy <code className="rounded bg-surface-2 px-1">.env.example</code> to{' '}
