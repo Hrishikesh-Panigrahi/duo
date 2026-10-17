@@ -1,15 +1,26 @@
 import { useEffect, useReducer, useState } from 'react'
 
-/** Keeps --app-h equal to the visible height: on iOS the keyboard shrinks only the visual viewport. */
-export function trackViewportHeight() {
+/** Set on <html> while an on-screen keyboard is up; CSS hides the tab bar then (see index.css). */
+const KEYBOARD_OPEN_ATTRIBUTE = 'data-keyboard-open'
+
+/**
+ * Keeps --app-h equal to the visible height (on iOS the keyboard shrinks only the visual viewport) and marks
+ * <html> while a keyboard is up. Both change in the same frame, so the screen moves once, not twice.
+ */
+export function trackViewport() {
   const viewport = window.visualViewport
   if (!viewport) return
+  const keyboard = keyboardDetector(viewport)
   const update = () => {
-    document.documentElement.style.setProperty('--app-h', `${Math.round(viewport.height * viewport.scale)}px`)
+    const root = document.documentElement
+    root.style.setProperty('--app-h', `${Math.round(viewport.height * viewport.scale)}px`)
+    root.toggleAttribute(KEYBOARD_OPEN_ATTRIBUTE, keyboard.isOpen())
     if (viewport.offsetTop > 0 && viewport.scale === 1) window.scrollTo(0, 0)
   }
   viewport.addEventListener('resize', update)
   viewport.addEventListener('scroll', update)
+  // Focus can move to a text field while the keyboard is already up, with no resize.
+  document.addEventListener('focusin', () => setTimeout(update, 0))
   update()
 }
 
@@ -30,41 +41,27 @@ function isTextEntry(el: Element | null) {
   return (el as HTMLElement).isContentEditable === true
 }
 
-/** True while an on-screen keyboard covers the screen. Focus alone isn't enough: desktops focus fields too. */
-export function useKeyboardOpen() {
-  const [open, setOpen] = useState(false)
-  useEffect(() => {
-    const viewport = window.visualViewport
-    return viewport ? watchKeyboard(viewport, setOpen) : undefined
-  }, [])
-  return open
-}
-
-/** Returns a function that stops watching. */
-function watchKeyboard(viewport: VisualViewport, onChange: (open: boolean) => void): () => void {
+/** Tells when an on-screen keyboard covers the screen. Focus alone isn't enough: desktops focus fields too. */
+function keyboardDetector(viewport: VisualViewport) {
   // The tallest the visible area has been at this width: rotating changes the width, a keyboard doesn't.
   let width = window.innerWidth
   let tallest = 0
-  const update = () => {
-    if (window.innerWidth !== width) {
-      width = window.innerWidth
-      tallest = 0
-    }
-    const height = viewport.height * viewport.scale // ignore pinch-zoom
-    tallest = Math.max(tallest, height)
-    // Keyboards take well over a quarter of the screen; the address bar collapsing takes far less.
-    onChange(isTextEntry(document.activeElement) && height < tallest * 0.75)
-  }
-  // focusout fires before focus lands on the next field; wait a tick.
-  const onFocusMoved = () => setTimeout(update, 0)
-  viewport.addEventListener('resize', update)
-  document.addEventListener('focusin', onFocusMoved)
-  document.addEventListener('focusout', onFocusMoved)
-  update()
-  return () => {
-    viewport.removeEventListener('resize', update)
-    document.removeEventListener('focusin', onFocusMoved)
-    document.removeEventListener('focusout', onFocusMoved)
+  let open = false
+  return {
+    isOpen() {
+      if (window.innerWidth !== width) {
+        width = window.innerWidth
+        tallest = 0
+      }
+      const height = viewport.height * viewport.scale // ignore pinch-zoom
+      tallest = Math.max(tallest, height)
+      // Keyboards take well over a quarter of the screen; the address bar collapsing takes far less.
+      const shrunk = height < tallest * 0.75
+      // It opens only for a text field, and counts as closed only once the screen has grown back, not the
+      // moment focus leaves: otherwise the tab bar reappears above a keyboard that's still sliding away.
+      open = shrunk && (open || isTextEntry(document.activeElement))
+      return open
+    },
   }
 }
 

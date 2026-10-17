@@ -12,6 +12,10 @@ const MAX_INCOMING = 4
 const SEND_BUFFER_LOW_BYTES = 1024 * 1024
 /** The receiver's one reply: the file is safely stored. */
 const STORED_REPLY = 'stored'
+// Why an outgoing transfer ended early. Whoever stops it passes the reason, so it's never a guess.
+const COULD_NOT_CONNECT = "Couldn't connect directly"
+const OTHER_PHONE_STOPPED = 'The other phone stopped the transfer'
+const THIS_PHONE_CLOSED = 'This phone closed the direct connection'
 
 type Route = { session: string; from: string; to: string }
 type Offer = Route & { type: 'offer'; sdp: RTCSessionDescriptionInit }
@@ -100,14 +104,14 @@ abstract class Transfer {
     }
   }
 
-  /** Ends the transfer now; an unfinished outgoing one rejects. */
-  abstract stop(): void
+  /** Ends the transfer now. An unfinished outgoing one rejects with `reason`; an incoming one just closes. */
+  abstract stop(reason: string): void
 
   acceptAnswer(sdp: RTCSessionDescriptionInit) {
     // If they're signed in on two devices, both answer; the first one wins.
     if (this.answered) return
     this.answered = true
-    this.addRemote(sdp).catch(() => this.stop())
+    this.addRemote(sdp).catch(() => this.stop(COULD_NOT_CONNECT))
   }
 
   addIce(candidate: RTCIceCandidateInit) {
@@ -139,7 +143,7 @@ class OutgoingTransfer extends Transfer {
   readonly done: Promise<void>
   private readonly channel: RTCDataChannel
   private settle: (err?: Error) => void = () => {}
-  private readonly connectTimer = setTimeout(() => this.finish(new Error("Couldn't connect directly")), CONNECT_TIMEOUT_MS)
+  private readonly connectTimer = setTimeout(() => this.finish(new Error(COULD_NOT_CONNECT)), CONNECT_TIMEOUT_MS)
   private readonly transferTimer = setTimeout(() => this.finish(new Error('Direct transfer took too long')), TRANSFER_TIMEOUT_MS)
 
   constructor(context: TransferContext, to: string, messageId: string, bytes: Uint8Array<ArrayBuffer>) {
@@ -159,13 +163,13 @@ class OutgoingTransfer extends Transfer {
       if (e.data === STORED_REPLY) this.finish()
     }
     this.peer.onconnectionstatechange = () => {
-      if (this.peer.connectionState === 'failed') this.finish(new Error("Couldn't connect directly"))
+      if (this.peer.connectionState === 'failed') this.finish(new Error(COULD_NOT_CONNECT))
     }
     this.sendDescription('offer').catch((e: Error) => this.finish(e))
   }
 
-  stop() {
-    this.finish(new Error('The other phone stopped the transfer'))
+  stop(reason: string) {
+    this.finish(new Error(reason))
   }
 
   private async sendInChunks(messageId: string, bytes: Uint8Array<ArrayBuffer>) {
@@ -262,10 +266,10 @@ export class DirectLink {
     const transfer = transfersBySession.get(signal.session)
     if (signal.type === 'answer') transfer?.acceptAnswer(signal.sdp)
     else if (signal.type === 'ice') transfer?.addIce(signal.candidate)
-    else if (signal.type === 'bye') transfer?.stop()
+    else if (signal.type === 'bye') transfer?.stop(OTHER_PHONE_STOPPED)
   }
 
   close() {
-    for (const transfer of this.context.transfersBySession.values()) transfer.stop()
+    for (const transfer of this.context.transfersBySession.values()) transfer.stop(THIS_PHONE_CLOSED)
   }
 }

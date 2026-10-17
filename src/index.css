@@ -69,6 +69,11 @@ body {
   height: var(--app-h, 100dvh);
 }
 
+/* Set together with --app-h (src/lib/device.ts), so the keyboard moves the screen once, not twice. */
+html[data-keyboard-open] .hide-while-keyboard-open {
+  display: none;
+}
+
 button {
   cursor: pointer;
 }
