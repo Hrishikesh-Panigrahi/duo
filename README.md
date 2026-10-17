@@ -9,7 +9,7 @@ It's an installable web app (PWA): open it on your phones, "Add to Home Screen",
 - **Chat**: realtime messages, "typing…" and online status, unread badge. Send a contact card to the other person,
   who can save it to their phone in one tap. Long-press a message to copy it, save it as a note, or delete it.
 - **View-once photos and videos**: opened once, then deleted. If you're both in the app, they go straight from one
-  phone to the other and are never stored anywhere else. If not, they wait (encrypted) for up to 3 days, then are
+  phone to the other and are never stored anywhere else. If not, they wait (encrypted) for up to 24 hours, then are
   deleted unopened. Videos can be up to 45 MB; photos are shrunk on the phone before sending.
 - **Lists**: shared checklists with due dates. **Coming up** shows birthdays from your contacts and anything due soon.
 - **Notes**: shared notes that save as you type; pin the important ones.
@@ -99,7 +99,7 @@ served from the same box behind Caddy or nginx with a TLS certificate. Trade-off
 - **Database: 500 MB.** Text is tiny, so that's well over a million messages. If it fills up, the database turns
   read-only; nothing is charged.
 - **File storage: 1 GB, 50 MB per file.** Only photos and videos sent while the other person is away are stored,
-  and they're deleted once opened or after 3 days, so this stays nearly empty.
+  and they're deleted once opened or after 24 hours, so this stays nearly empty.
 - **Data transfer: 5 GB a month** (plus 5 GB cached). Photos barely count; large videos do.
 - **Free projects pause after a week of no use**; resume them from the Supabase dashboard.
 

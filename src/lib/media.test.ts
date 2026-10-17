@@ -17,11 +17,11 @@ describe('view-once media helpers', () => {
     expect(fitWithin(800, 600)).toEqual({ width: 800, height: 600 })
   })
 
-  it('expires unopened media after 3 days', () => {
+  it('expires unopened media after 24 hours', () => {
     const now = Date.UTC(2026, 9, 17)
-    const daysAgo = (d: number) => new Date(now - d * 86_400_000).toISOString()
-    expect(isExpired(daysAgo(2.9), now)).toBe(false)
-    expect(isExpired(daysAgo(3.1), now)).toBe(true)
+    const hoursAgo = (hours: number) => new Date(now - hours * 3_600_000).toISOString()
+    expect(isExpired(hoursAgo(23.9), now)).toBe(false)
+    expect(isExpired(hoursAgo(24.1), now)).toBe(true)
   })
 
   it('only ever sends or opens photo and video types, never SVG or a page', () => {

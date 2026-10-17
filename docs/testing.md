@@ -24,7 +24,7 @@ node scripts/check-doc-names.cjs  # names in the docs' inline code spans still e
 | `rows.test.ts` | The stored-rows reducer, including messages still being sent |
 | `direct.test.ts` | Transfer framing: headers, reassembly, non-binary chunks, and more bytes than promised |
 | `invite.test.ts` | Invite links and codes, and dropping saved invites after two weeks |
-| `media.test.ts` | The video size limit, photo scaling, the 3-day expiry, the `PLAYABLE_TYPE` pattern, storage paths |
+| `media.test.ts` | The video size limit, photo scaling, the 24-hour expiry, the `PLAYABLE_TYPE` pattern, storage paths |
 | `passphrase.test.ts`, `vcard.test.ts`, `dates.test.ts`, `supabase.test.ts` | Passphrase strength; vCard import and export; day counting, birthdays and relative-day labels; error messages |
 
 Tests that need WebCrypto use Node's built-in `crypto.subtle`. Nothing here talks to Supabase.
