@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { BookUser, ListChecks, MessageCircle, Settings, StickyNote } from 'lucide-react'
 import { useSpace, type SpaceActions } from '../lib/store'
-import { useDocumentVisible, useKeyboardOpen } from '../lib/device'
+import { useDocumentVisible } from '../lib/device'
 import { deviceStorage } from '../lib/device-storage'
 import type { Member, Message } from '../lib/types'
 import { Avatar, Button, IconButton, Splash, cx, toast, toastError } from '../components/ui'
@@ -66,7 +66,6 @@ function ShellReady() {
   const { space, userId, messages, actions } = useSpace()
   const nav = useNavState()
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const keyboardOpen = useKeyboardOpen()
   const unread = useUnreadCount(space!.id, messages, userId, nav.tab === 'chat')
   useUnreadBadge(unread)
   useTidyUpOnce(actions)
@@ -75,7 +74,7 @@ function ShellReady() {
       <div className="app-height mx-auto flex max-w-2xl flex-col sm:border-x sm:border-line">
         <ShellHeader onSettings={() => setSettingsOpen(true)} />
         <TabPanels tab={nav.tab} />
-        {!keyboardOpen && <TabBar tab={nav.tab} unread={unread} onSelect={nav.setTab} />}
+        <TabBar tab={nav.tab} unread={unread} onSelect={nav.setTab} />
       </div>
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </NavContext.Provider>
@@ -176,7 +175,7 @@ function ShellHeader({ onSettings }: { onSettings: () => void }) {
 
 function TabBar({ tab, unread, onSelect }: { tab: Tab; unread: number; onSelect: (t: Tab) => void }) {
   return (
-    <nav className="shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
+    <nav className="hide-while-keyboard-open shrink-0 border-t border-line bg-bg pb-[env(safe-area-inset-bottom)]">
       <div className="grid grid-cols-4">
         {TABS.map(({ id, label, icon: Icon }) => (
           <button

@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest'
-import { CHUNK_BYTES, FileAssembler, joinChunks, parseHeader } from './direct'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { CHUNK_BYTES, DirectLink, FileAssembler, joinChunks, parseHeader, type Signal } from './direct'
 
 const id = '3f2b8c1e-9a4d-4e7f-8b2a-1c5d6e7f8a9b'
 
@@ -42,5 +42,53 @@ describe('direct transfer framing', () => {
     const over = new FileAssembler()
     over.addMessage(JSON.stringify({ messageId: id, size: 2 }))
     expect(over.addMessage(new Uint8Array([1, 2, 3]).buffer)).toBe('invalid')
+  })
+})
+
+// Node has no WebRTC: just enough of a peer connection for an outgoing transfer to start and send its offer.
+class FakePeerConnection {
+  localDescription: { toJSON: () => RTCSessionDescriptionInit } | null = null
+  createDataChannel() {
+    return { close() {}, send() {} }
+  }
+  async createOffer(): Promise<RTCSessionDescriptionInit> {
+    return { type: 'offer', sdp: 'fake' }
+  }
+  async setLocalDescription(description: RTCSessionDescriptionInit) {
+    this.localDescription = { toJSON: () => description }
+  }
+  close() {}
+}
+
+describe('ending a direct transfer early', () => {
+  beforeEach(() => vi.stubGlobal('RTCPeerConnection', FakePeerConnection))
+  afterEach(() => vi.unstubAllGlobals())
+
+  function startSending() {
+    const signals: Signal[] = []
+    const link = new DirectLink({
+      selfId: 'me',
+      sendSignal: async (signal) => {
+        signals.push(signal)
+      },
+      acceptFrom: (userId) => userId === 'you',
+      onFile: async () => {},
+    })
+    const sent = link.sendFile('you', id, new Uint8Array(8))
+    return { link, sent, signals }
+  }
+
+  it('says this phone closed the connection when this phone closes it, and tells the other phone', async () => {
+    const { link, sent, signals } = startSending()
+    link.close()
+    await expect(sent).rejects.toThrow('This phone closed the direct connection')
+    expect(signals.map((signal) => signal.type)).toContain('bye')
+  })
+
+  it('says the other phone stopped the transfer when it sends goodbye', async () => {
+    const { link, sent, signals } = startSending()
+    await vi.waitFor(() => expect(signals.some((signal) => signal.type === 'offer')).toBe(true))
+    link.handleSignal({ session: signals[0].session, from: 'you', to: 'me', type: 'bye' })
+    await expect(sent).rejects.toThrow('The other phone stopped the transfer')
   })
 })
