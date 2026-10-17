@@ -2,21 +2,40 @@ import { useState, type FormEvent } from 'react'
 import { CalendarClock, ChevronLeft, Pencil, Plus, Trash } from 'lucide-react'
 import { useSpace } from '../lib/store'
 import type { List, ListItem } from '../lib/types'
-import { daysBetween, formatDay, parseYMD, relativeDays, todayYMD, toYMDString } from '../lib/dates'
+import { daysBetween, formatDay, parseYMD, relativeDays, toLocalYMD, toYMDString } from '../lib/dates'
 import { Button, Field, IconButton, Input, Sheet, cx, toast, toastError } from '../components/ui'
 import { useBusy } from '../components/use-busy'
-import { CheckCircle, dueTone } from './list-parts'
+import { CheckCircle, daysAwayColor } from './list-parts'
 import { ListSheet } from './list-form'
 
-function shiftDays(ymd: string, n: number) {
+// Date.getDay() numbering: Sunday is 0.
+const SATURDAY = 6
+
+function addDays(ymd: string, days: number) {
   const { y, m, d } = parseYMD(ymd)
-  const date = new Date(y, m - 1, d + n)
+  const date = new Date(y, m - 1, d + days)
   return toYMDString({ y: date.getFullYear(), m: date.getMonth() + 1, d: date.getDate() })
+}
+
+/** The quick picks under the due date, counted from `today`. */
+function duePresets(today: string) {
+  const { y, m, d } = parseYMD(today)
+  const weekday = new Date(y, m - 1, d).getDay()
+  // On a Saturday, the next one.
+  const daysToSaturday = weekday === SATURDAY ? 7 : SATURDAY - weekday
+  return [
+    { label: 'Today', value: today },
+    { label: 'Tomorrow', value: addDays(today, 1) },
+    { label: 'Saturday', value: addDays(today, daysToSaturday) },
+    { label: 'Next week', value: addDays(today, 7) },
+  ]
 }
 
 export function ListView({ list, onBack }: { list: List; onBack: () => void }) {
   const { list_items } = useSpace()
-  const items = list_items.filter((i) => i.list_id === list.id)
+  const items = list_items.filter((item) => item.list_id === list.id)
+  const toDoItems = items.filter((item) => !item.done)
+  const doneItems = items.filter((item) => item.done)
   const [editingItem, setEditingItem] = useState<ListItem | null>(null)
   const [editingList, setEditingList] = useState(false)
   return (
@@ -24,12 +43,10 @@ export function ListView({ list, onBack }: { list: List; onBack: () => void }) {
       <ListHeader list={list} onBack={onBack} onEdit={() => setEditingList(true)} />
       <div className="min-h-0 flex-1 overflow-y-auto pt-1 pb-4">
         {items.length === 0 && <p className="py-12 text-center text-sm text-muted">Nothing here yet. Add the first thing below.</p>}
-        {items
-          .filter((i) => !i.done)
-          .map((i) => (
-            <ItemRow key={i.id} item={i} onOpen={() => setEditingItem(i)} />
-          ))}
-        <DoneItems listId={list.id} items={items.filter((i) => i.done)} onOpen={setEditingItem} />
+        {toDoItems.map((item) => (
+          <ItemRow key={item.id} item={item} onOpen={() => setEditingItem(item)} />
+        ))}
+        <DoneItems listId={list.id} items={doneItems} onOpen={setEditingItem} />
       </div>
       <AddItemForm listId={list.id} />
       <Sheet open={!!editingItem} onClose={() => setEditingItem(null)} title="Item">
@@ -70,26 +87,30 @@ function DoneItems({ listId, items, onOpen }: { listId: string; items: ListItem[
           Clear done
         </button>
       </div>
-      {shown && items.map((i) => <ItemRow key={i.id} item={i} onOpen={() => onOpen(i)} />)}
+      {shown && items.map((item) => <ItemRow key={item.id} item={item} onOpen={() => onOpen(item)} />)}
     </>
   )
 }
 
 function ItemRow({ item, onOpen }: { item: ListItem; onOpen: () => void }) {
   const { actions } = useSpace()
-  const days = item.due_date ? daysBetween(todayYMD(), item.due_date) : null
   return (
     <div className="flex items-start gap-1 pr-4 pl-1">
       <CheckCircle checked={item.done} label={item.text} onToggle={() => actions.lists.updateItem(item.id, { done: !item.done }).catch(toastError)} />
       <button onClick={onOpen} className="min-w-0 flex-1 py-2.5 text-left">
         <div className={cx('break-words', item.done && 'text-muted line-through')}>{item.text}</div>
-        {item.due_date && days !== null && !item.done && (
-          <div className={cx('mt-0.5 flex items-center gap-1 text-xs', dueTone(days))}>
-            <CalendarClock className="size-3.5" />
-            {relativeDays(days)} · {formatDay(item.due_date)}
-          </div>
-        )}
+        {item.due_date && !item.done && <DueLabel dueDate={item.due_date} />}
       </button>
+    </div>
+  )
+}
+
+function DueLabel({ dueDate }: { dueDate: string }) {
+  const daysUntilDue = daysBetween(toLocalYMD(), dueDate)
+  return (
+    <div className={cx('mt-0.5 flex items-center gap-1 text-xs', daysAwayColor(daysUntilDue))}>
+      <CalendarClock className="size-3.5" />
+      {relativeDays(daysUntilDue)} · {formatDay(dueDate)}
     </div>
   )
 }
@@ -114,6 +135,7 @@ function AddItemForm({ listId }: { listId: string }) {
         type="submit"
         label="Add item"
         disabled={!draft.trim()}
+        // Keep the keyboard up: don't let the button steal focus from the input.
         onMouseDown={(e) => e.preventDefault()}
         className="size-11 bg-accent text-accent-ink hover:bg-accent"
       >
@@ -126,22 +148,25 @@ function AddItemForm({ listId }: { listId: string }) {
 function ItemForm({ item, onDone }: { item: ListItem; onDone: () => void }) {
   const { actions } = useSpace()
   const [text, setText] = useState(item.text)
-  const [due, setDue] = useState(item.due_date ?? '')
+  const [dueDate, setDueDate] = useState(item.due_date ?? '')
   const { busy, run } = useBusy({ toast: true })
   function save(e: FormEvent) {
     e.preventDefault()
-    if (text.trim()) void run(() => actions.lists.updateItem(item.id, { text: text.trim(), due_date: due || null }).then(onDone))
+    const trimmed = text.trim()
+    if (!trimmed) return
+    void run(async () => {
+      await actions.lists.updateItem(item.id, { text: trimmed, due_date: dueDate || null })
+      onDone()
+    })
   }
   return (
     <form onSubmit={save} className="space-y-5">
       <Field label="What">
         <Input value={text} onChange={(e) => setText(e.target.value)} maxLength={500} required />
       </Field>
-      <DueInput value={due} onChange={setDue} />
+      <DueInput value={dueDate} onChange={setDueDate} />
       <div className="flex gap-2">
-        <Button variant="danger" icon={<Trash />} onClick={() => actions.lists.removeItem(item.id).then(onDone, toastError)}>
-          Delete
-        </Button>
+        <DeleteItemButton item={item} onDeleted={onDone} />
         <Button type="submit" loading={busy} className="flex-1">
           Save
         </Button>
@@ -150,23 +175,26 @@ function ItemForm({ item, onDone }: { item: ListItem; onDone: () => void }) {
   )
 }
 
-function DueInput({ value, onChange }: { value: string; onChange: (due: string) => void }) {
-  const today = todayYMD()
-  const presets = [
-    { label: 'Today', value: today },
-    { label: 'Tomorrow', value: shiftDays(today, 1) },
-    { label: 'Saturday', value: shiftDays(today, (6 - new Date().getDay() + 7) % 7 || 7) },
-    { label: 'Next week', value: shiftDays(today, 7) },
-  ]
+function DeleteItemButton({ item, onDeleted }: { item: ListItem; onDeleted: () => void }) {
+  const { actions } = useSpace()
+  return (
+    <Button variant="danger" icon={<Trash />} onClick={() => actions.lists.removeItem(item.id).then(onDeleted, toastError)}>
+      Delete
+    </Button>
+  )
+}
+
+function DueInput({ value, onChange }: { value: string; onChange: (dueDate: string) => void }) {
+  const presets = duePresets(toLocalYMD())
   return (
     <div>
       <Field label="Due">
         <Input type="date" value={value} onChange={(e) => onChange(e.target.value)} />
       </Field>
       <div className="mt-2 flex flex-wrap gap-1.5">
-        {presets.map((p) => (
-          <button key={p.label} type="button" onClick={() => onChange(p.value)} className={cx('h-8 rounded-full px-3 text-sm', value === p.value ? 'bg-ink text-bg' : 'bg-surface-2')}>
-            {p.label}
+        {presets.map((preset) => (
+          <button key={preset.label} type="button" onClick={() => onChange(preset.value)} className={cx('h-8 rounded-full px-3 text-sm', value === preset.value ? 'bg-ink text-bg' : 'bg-surface-2')}>
+            {preset.label}
           </button>
         ))}
         {value && (

@@ -7,28 +7,38 @@ import type { MediaInfo } from './types'
 const ITERATIONS = 600_000
 const CHECK_PLAINTEXT = 'duo:key-check:v1'
 export const MIN_PASSPHRASE_LENGTH = 12
+const SALT_BYTES = 16
+/** AES-GCM's standard nonce length. */
+const IV_BYTES = 12
+/** The authentication tag AES-GCM adds to the end of every ciphertext. */
+const GCM_TAG_BYTES = 16
 
 const utf8 = new TextEncoder()
 const fromUtf8 = new TextDecoder()
 
+// Spreading a huge array into String.fromCharCode overflows the call stack, so bytes go in chunks of this many.
+const BASE64_CHUNK_BYTES = 0x8000
+
 function toBase64(bytes: Uint8Array): string {
-  let s = ''
-  for (let i = 0; i < bytes.length; i += 0x8000) s += String.fromCharCode(...bytes.subarray(i, i + 0x8000))
-  return btoa(s)
+  let binary = ''
+  for (let start = 0; start < bytes.length; start += BASE64_CHUNK_BYTES) {
+    binary += String.fromCharCode(...bytes.subarray(start, start + BASE64_CHUNK_BYTES))
+  }
+  return btoa(binary)
 }
 
-function fromBase64(s: string): Uint8Array<ArrayBuffer> {
-  const bin = atob(s)
-  const out = new Uint8Array(bin.length)
-  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i)
-  return out
+function fromBase64(base64: string): Uint8Array<ArrayBuffer> {
+  const binary = atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i)
+  return bytes
 }
 
 /** WebCrypto only exists on https:// and localhost. */
 export const cryptoAvailable = () => typeof crypto !== 'undefined' && typeof crypto.subtle?.deriveKey === 'function'
 
 export function newSalt(): string {
-  return toBase64(crypto.getRandomValues(new Uint8Array(16)))
+  return toBase64(crypto.getRandomValues(new Uint8Array(SALT_BYTES)))
 }
 
 /** Non-extractable: the raw key bytes can't be read back out, even by the app. */
@@ -44,24 +54,28 @@ export async function deriveKey(passphrase: string, salt: string): Promise<Crypt
 }
 
 async function seal(key: CryptoKey, plaintext: string, context: string): Promise<string> {
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: utf8.encode(context) }, key, utf8.encode(plaintext))
-  return `v1:${toBase64(iv)}:${toBase64(new Uint8Array(ct))}`
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES))
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: utf8.encode(context) }, key, utf8.encode(plaintext))
+  return `v1:${toBase64(iv)}:${toBase64(new Uint8Array(ciphertext))}`
 }
 
-async function open(key: CryptoKey, sealed: string, context: string): Promise<string> {
-  const [version, iv, ct] = sealed.split(':')
-  if (version !== 'v1' || !iv || !ct) throw new Error('Unknown encryption format')
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromBase64(iv), additionalData: utf8.encode(context) }, key, fromBase64(ct))
-  return fromUtf8.decode(pt)
+async function unseal(key: CryptoKey, sealed: string, context: string): Promise<string> {
+  const [version, ivBase64, ciphertextBase64] = sealed.split(':')
+  if (version !== 'v1' || !ivBase64 || !ciphertextBase64) throw new Error('Unknown encryption format')
+  const plaintext = await crypto.subtle.decrypt(
+    { name: 'AES-GCM', iv: fromBase64(ivBase64), additionalData: utf8.encode(context) },
+    key,
+    fromBase64(ciphertextBase64),
+  )
+  return fromUtf8.decode(plaintext)
 }
 
-export const makeCheck = (key: CryptoKey, spaceId: string) => seal(key, CHECK_PLAINTEXT, contexts.check(spaceId))
+export const makeKeyCheck = (key: CryptoKey, spaceId: string) => seal(key, CHECK_PLAINTEXT, contexts.check(spaceId))
 
 /** True if this key was derived from the space's passphrase. */
 export async function keyMatches(key: CryptoKey, spaceId: string, check: string): Promise<boolean> {
   try {
-    return (await open(key, check, contexts.check(spaceId))) === CHECK_PLAINTEXT
+    return (await unseal(key, check, contexts.check(spaceId))) === CHECK_PLAINTEXT
   } catch {
     return false
   }
@@ -87,12 +101,13 @@ export const contexts = {
 }
 
 export function encryptMessage(key: CryptoKey, ids: MessageIds, content: MessageContent): Promise<string> {
+  // The short keys b, c and m are part of the stored format: never rename them.
   return seal(key, JSON.stringify({ b: content.body, c: content.contact, m: content.media ?? null }), contexts.message(ids))
 }
 
 /** Throws if the key is wrong or the ciphertext was tampered with or moved. */
 export async function decryptMessage(key: CryptoKey, ids: MessageIds, cipher: string): Promise<MessageContent> {
-  const parsed = JSON.parse(await open(key, cipher, contexts.message(ids))) as {
+  const parsed = JSON.parse(await unseal(key, cipher, contexts.message(ids))) as {
     b?: string | null
     c?: ContactCard | null
     m?: MediaInfo | null
@@ -106,28 +121,29 @@ export function encryptRecord(key: CryptoKey, context: string, value: unknown): 
 }
 
 export async function decryptRecord<T>(key: CryptoKey, context: string, cipher: string): Promise<T> {
-  return JSON.parse(await open(key, cipher, context)) as T
+  return JSON.parse(await unseal(key, cipher, context)) as T
 }
 
 // Files: one version byte, a 12-byte IV, then the AES-GCM ciphertext.
 const FILE_VERSION = 1
+const FILE_HEADER_BYTES = 1 + IV_BYTES
 
 export async function encryptBytes(key: CryptoKey, context: string, data: ArrayBuffer): Promise<Uint8Array<ArrayBuffer>> {
-  const iv = crypto.getRandomValues(new Uint8Array(12))
-  const ct = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: utf8.encode(context) }, key, data))
-  const out = new Uint8Array(1 + iv.length + ct.length)
-  out[0] = FILE_VERSION
-  out.set(iv, 1)
-  out.set(ct, 1 + iv.length)
-  return out
+  const iv = crypto.getRandomValues(new Uint8Array(IV_BYTES))
+  const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: utf8.encode(context) }, key, data))
+  const file = new Uint8Array(FILE_HEADER_BYTES + ciphertext.length)
+  file[0] = FILE_VERSION
+  file.set(iv, 1)
+  file.set(ciphertext, FILE_HEADER_BYTES)
+  return file
 }
 
 export async function decryptBytes(key: CryptoKey, context: string, data: ArrayBuffer): Promise<ArrayBuffer> {
   const bytes = new Uint8Array(data)
-  if (bytes[0] !== FILE_VERSION || bytes.length < 13 + 16) throw new Error('Unknown encrypted file format')
+  if (bytes[0] !== FILE_VERSION || bytes.length < FILE_HEADER_BYTES + GCM_TAG_BYTES) throw new Error('Unknown encrypted file format')
   return crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: bytes.subarray(1, 13), additionalData: utf8.encode(context) },
+    { name: 'AES-GCM', iv: bytes.subarray(1, FILE_HEADER_BYTES), additionalData: utf8.encode(context) },
     key,
-    bytes.subarray(13),
+    bytes.subarray(FILE_HEADER_BYTES),
   )
 }

@@ -3,12 +3,13 @@ import { ArrowUp, ContactRound, Copy, Download, Image, ImagePlus, Lock, MessageC
 import { useSpace } from '../lib/store'
 import { toCard, type Contact, type Message } from '../lib/types'
 import { downloadVCard, type ContactCard } from '../lib/vcard'
-import { todayYMD } from '../lib/dates'
+import { toLocalYMD } from '../lib/dates'
 import { isTouch } from '../lib/device'
 import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, cx, toast, toastError } from '../components/ui'
 import { useLongPress } from '../components/long-press'
 import { useBusy } from '../components/use-busy'
-import { ContactPicker, findExisting } from './contacts'
+import { findDuplicate } from '../lib/contact-match'
+import { ContactPicker } from './contacts'
 import { InviteCode } from './space-setup'
 import { useNav } from './nav'
 import { MediaBubble, MediaSendSheet, MediaViewer } from './chat-media'
@@ -19,16 +20,21 @@ const dayYearFmt = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: '
 // Messages from the same person within a few minutes sit together.
 const GROUP_GAP_MS = 3 * 60_000
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]}!?])/g
-const EMOJI_ONLY = /^(?:\p{Extended_Pictographic}(?:️|[\u{1F3FB}-\u{1F3FF}]|‍\p{Extended_Pictographic}️?)*\s*){1,3}$/u
+// 1–3 emoji and nothing else; each may carry a skin tone or U+FE0F, or be joined by U+200D into one glyph.
+const ONE_TO_THREE_EMOJI = /^(?:\p{Extended_Pictographic}(?:\u{FE0F}|[\u{1F3FB}-\u{1F3FF}]|\u{200D}\p{Extended_Pictographic}\u{FE0F}?)*\s*){1,3}$/u
+// Within this many pixels of the end still counts as being at the bottom.
+const NEAR_BOTTOM_PX = 80
 
-type Outgoing = { body?: string; contact?: ContactCard }
+type OutgoingMessage = { body?: string; contact?: ContactCard }
 
 function dayLabel(iso: string) {
-  const d = new Date(iso)
+  const day = new Date(iso)
   const now = new Date()
-  if (todayYMD(d) === todayYMD(now)) return 'Today'
-  if (todayYMD(d) === todayYMD(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1))) return 'Yesterday'
-  return (d.getFullYear() === now.getFullYear() ? dayFmt : dayYearFmt).format(d)
+  const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1)
+  if (toLocalYMD(day) === toLocalYMD(now)) return 'Today'
+  if (toLocalYMD(day) === toLocalYMD(yesterday)) return 'Yesterday'
+  if (day.getFullYear() === now.getFullYear()) return dayFmt.format(day)
+  return dayYearFmt.format(day)
 }
 
 export function ChatTab({ active }: { active: boolean }) {
@@ -39,14 +45,14 @@ export function ChatTab({ active }: { active: boolean }) {
       <MessageList messages={messages} scroller={scroll.ref} onScroll={scroll.onScroll} />
       <Composer
         onSend={(message) => {
-          scroll.stick()
+          scroll.stickToBottom()
           return actions.chat.send(message)
         }}
         onSendMedia={(file) => {
-          scroll.stick()
+          scroll.stickToBottom()
           actions.chat.sendMedia(file).catch(toastError)
         }}
-        onTyping={() => actions.chat.typing()}
+        onTyping={() => actions.chat.sendTyping()}
       />
     </div>
   )
@@ -61,22 +67,25 @@ function useStickToBottom(messages: Message[], active: boolean) {
     if (el && active && atBottom.current) el.scrollTop = el.scrollHeight
   }, [messages, active])
   useEffect(() => {
-    const vv = window.visualViewport
+    const viewport = window.visualViewport
     const follow = () => {
       const el = ref.current
       if (el && atBottom.current) el.scrollTop = el.scrollHeight
     }
-    vv?.addEventListener('resize', follow)
-    return () => vv?.removeEventListener('resize', follow)
+    viewport?.addEventListener('resize', follow)
+    return () => viewport?.removeEventListener('resize', follow)
   }, [])
   return {
     ref,
     onScroll: (e: UIEvent<HTMLDivElement>) => {
       const el = e.currentTarget
-      atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+      const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+      atBottom.current = distanceFromBottom < NEAR_BOTTOM_PX
     },
     /** Something's being sent: show it when it arrives. */
-    stick: () => void (atBottom.current = true),
+    stickToBottom: () => {
+      atBottom.current = true
+    },
   }
 }
 
@@ -96,8 +105,8 @@ function MessageList({ messages, scroller, onScroll }: MessageListProps) {
             <Lock className="size-3" /> End-to-end encrypted
           </div>
         )}
-        {messages.map((m, i) => (
-          <MessageRow key={m.id} message={m} prev={messages[i - 1]} mine={m.sender_id === userId} onMenu={setMenuFor} onOpenMedia={setViewing} />
+        {messages.map((message, i) => (
+          <MessageRow key={message.id} message={message} prev={messages[i - 1]} mine={message.sender_id === userId} onMenu={setMenuFor} onOpenMedia={setViewing} />
         ))}
       </div>
       <MessageMenu message={menuFor} mine={menuFor?.sender_id === userId} onClose={() => setMenuFor(null)} />
@@ -126,72 +135,82 @@ function ChatEmpty() {
   )
 }
 
-type BubbleProps = { message: Message; mine: boolean; grouped: boolean; onMenu: (m: Message) => void; onOpenMedia: (m: Message) => void }
+type BubbleProps = {
+  message: Message
+  mine: boolean
+  grouped: boolean
+  onMenu: (message: Message) => void
+  onOpenMedia: (message: Message) => void
+}
 
 /** A message, with the day above it when it's the first that day. */
-function MessageRow({ message: m, prev, ...bubble }: Omit<BubbleProps, 'grouped'> & { prev: Message | undefined }) {
-  const newDay = !prev || todayYMD(new Date(prev.created_at)) !== todayYMD(new Date(m.created_at))
-  const closeToPrev = prev !== undefined && Date.parse(m.created_at) - Date.parse(prev.created_at) < GROUP_GAP_MS
-  const grouped = !newDay && prev?.sender_id === m.sender_id && closeToPrev
+function MessageRow({ message, prev, ...bubble }: Omit<BubbleProps, 'grouped'> & { prev: Message | undefined }) {
+  const startsNewDay = !prev || toLocalYMD(new Date(prev.created_at)) !== toLocalYMD(new Date(message.created_at))
+  const closeToPrev = prev !== undefined && Date.parse(message.created_at) - Date.parse(prev.created_at) < GROUP_GAP_MS
+  const grouped = !startsNewDay && prev?.sender_id === message.sender_id && closeToPrev
   return (
     <>
-      {newDay && <div className="my-4 text-center text-xs font-medium text-muted">{dayLabel(m.created_at)}</div>}
-      <Bubble message={m} grouped={grouped} {...bubble} />
+      {startsNewDay && <div className="my-4 text-center text-xs font-medium text-muted">{dayLabel(message.created_at)}</div>}
+      <Bubble message={message} grouped={grouped} {...bubble} />
     </>
   )
 }
 
-function Bubble({ message: m, mine, grouped, onMenu, onOpenMedia }: BubbleProps) {
-  const press = useLongPress(() => onMenu(m))
+function Bubble({ message, mine, grouped, onMenu, onOpenMedia }: BubbleProps) {
+  const press = useLongPress(() => onMenu(message))
   return (
     <div className={cx('flex', mine ? 'justify-end' : 'justify-start', grouped ? 'mt-0.5' : 'mt-2.5')}>
-      <div {...press} className={cx('no-callout max-w-[82%] transition-opacity', m.pending && 'opacity-60')}>
-        <BubbleContent message={m} mine={mine} grouped={grouped} onOpenMedia={onOpenMedia} />
+      <div {...press} className={cx('no-callout max-w-[82%] transition-opacity', message.pending && 'opacity-60')}>
+        <BubbleContent message={message} mine={mine} grouped={grouped} onOpenMedia={onOpenMedia} />
       </div>
     </div>
   )
 }
 
-function BubbleContent({ message: m, mine, grouped, onOpenMedia }: Omit<BubbleProps, 'onMenu'>) {
+function BubbleContent({ message, mine, grouped, onOpenMedia }: Omit<BubbleProps, 'onMenu'>) {
   const stamp = (
     <span className={cx('ml-2 inline-block translate-y-0.5 align-bottom text-[11px]', mine ? 'opacity-75' : 'text-muted')}>
-      {m.pending ? 'sending…' : timeFmt.format(new Date(m.created_at))}
+      {message.pending ? 'sending…' : timeFmt.format(new Date(message.created_at))}
     </span>
   )
-  if (m.locked || m.undecryptable) {
+  if (message.locked || message.undecryptable) {
     return (
       <div className={cx('rounded-[1.25rem] border border-dashed border-line px-3.5 py-2 text-sm text-muted italic', mine ? 'rounded-br-md' : 'rounded-bl-md')}>
-        {m.undecryptable ? "Couldn't decrypt this message" : 'Locked: unlock to read'}
+        {message.undecryptable ? "Couldn't decrypt this message" : 'Locked: unlock to read'}
         {stamp}
       </div>
     )
   }
-  if (m.has_media) return <MediaBubble message={m} mine={mine} stamp={stamp} onOpen={onOpenMedia} />
-  if (m.contact) return <ContactBubble card={m.contact} mine={mine} stamp={stamp} />
-  if (m.body && EMOJI_ONLY.test(m.body.trim())) {
+  if (message.has_media) return <MediaBubble message={message} mine={mine} stamp={stamp} onOpen={onOpenMedia} />
+  if (message.contact) return <ContactBubble card={message.contact} mine={mine} stamp={stamp} />
+  if (message.body && ONE_TO_THREE_EMOJI.test(message.body.trim())) {
     return (
       <div className={cx('px-1', mine && 'text-right')}>
-        <div className="text-5xl leading-tight">{m.body.trim()}</div>
+        <div className="text-5xl leading-tight">{message.body.trim()}</div>
         <div className="-mt-1 text-muted">{stamp}</div>
       </div>
     )
   }
-  return <TextBubble body={m.body ?? ''} mine={mine} grouped={grouped} stamp={stamp} />
+  return <TextBubble body={message.body ?? ''} mine={mine} grouped={grouped} stamp={stamp} />
 }
 
 function TextBubble({ body, mine, grouped, stamp }: { body: string; mine: boolean; grouped: boolean; stamp: ReactNode }) {
-  const corner = mine ? (grouped ? 'rounded-tr-md' : 'rounded-br-md') : grouped ? 'rounded-tl-md' : 'rounded-bl-md'
+  // The corner on the sender's side is squared: the top one when the bubble continues a group, else the bottom one.
+  // Whole class names, so Tailwind finds them.
+  let squaredCorner = grouped ? 'rounded-tl-md' : 'rounded-bl-md'
+  if (mine) squaredCorner = grouped ? 'rounded-tr-md' : 'rounded-br-md'
   return (
-    <div className={cx('rounded-[1.25rem] px-3.5 py-2 break-words whitespace-pre-wrap', mine ? 'bg-accent text-accent-ink' : 'border border-line bg-surface', corner)}>
-      {body.split(URL_RE).map((part, i) =>
-        i % 2 ? (
+    <div className={cx('rounded-[1.25rem] px-3.5 py-2 break-words whitespace-pre-wrap', mine ? 'bg-accent text-accent-ink' : 'border border-line bg-surface', squaredCorner)}>
+      {/* URL_RE has one capture group, so split() keeps each URL, at the odd indexes. */}
+      {body.split(URL_RE).map((part, i) => {
+        const isUrl = i % 2 === 1
+        if (!isUrl) return part
+        return (
           <a key={i} href={part} target="_blank" rel="noreferrer" className="underline underline-offset-2 [overflow-wrap:anywhere]">
             {part}
           </a>
-        ) : (
-          part
-        ),
-      )}
+        )
+      })}
       {stamp}
     </div>
   )
@@ -222,12 +241,12 @@ function AddOrOpenContact({ card }: { card: ContactCard }) {
   const { contacts, actions } = useSpace()
   const nav = useNav()
   const { busy, run } = useBusy({ toast: true })
-  const existing = findExisting(card, contacts)
+  const existing = findDuplicate(card, contacts)
   const add = () =>
     run(async () => {
       await actions.contacts.add({ ...toCard(card), tags: [], favorite: false })
       toast(`Added ${card.full_name} to contacts`)
-    }, { settle: true })
+    }, { idleAfterSuccess: true })
   if (existing) {
     return (
       <Button size="sm" variant="secondary" onClick={() => nav.openContact(existing.id)} className="bg-surface">
@@ -243,33 +262,38 @@ function AddOrOpenContact({ card }: { card: ContactCard }) {
 }
 
 /** For a menu item: closes the menu, then does `task` and toasts how it went. */
-function closeThen(onClose: () => void, task: () => Promise<unknown> | void, done?: string) {
+function closeThen(onClose: () => void, task: () => Promise<unknown> | void, successToast?: string) {
   return async () => {
     onClose()
     try {
       await task()
-      if (done) toast(done)
+      if (successToast) toast(successToast)
     } catch (e) {
       toastError(e)
     }
   }
 }
 
-function MessageMenu({ message: m, mine, onClose }: { message: Message | null; mine: boolean; onClose: () => void }) {
+function menuTitle(message: Message | null): string {
+  if (message?.contact) return message.contact.full_name
+  if (!message?.has_media) return 'Message'
+  return message.media?.kind === 'video' ? 'Video' : 'Photo'
+}
+
+function MessageMenu({ message, mine, onClose }: { message: Message | null; mine: boolean; onClose: () => void }) {
   const { actions, partner } = useSpace()
-  const title = m?.contact ? m.contact.full_name : m?.has_media ? (m.media?.kind === 'video' ? 'Video' : 'Photo') : 'Message'
   return (
-    <Sheet open={!!m} onClose={onClose} title={title}>
-      {m && (
+    <Sheet open={!!message} onClose={onClose} title={menuTitle(message)}>
+      {message && (
         <div className="-mx-2">
-          {m.body && <TextActions body={m.body} onClose={onClose} />}
-          {m.contact && (
-            <MenuItem icon={<Download />} onClick={closeThen(onClose, () => downloadVCard(m.contact!))}>
+          {message.body && <TextActions body={message.body} onClose={onClose} />}
+          {message.contact && (
+            <MenuItem icon={<Download />} onClick={closeThen(onClose, () => downloadVCard(message.contact!))}>
               Save to phone
             </MenuItem>
           )}
-          {mine && !m.pending && (
-            <MenuItem danger icon={<Trash />} onClick={closeThen(onClose, () => actions.chat.remove(m.id), 'Deleted')}>
+          {mine && !message.pending && (
+            <MenuItem danger icon={<Trash />} onClick={closeThen(onClose, () => actions.chat.remove(message.id), 'Deleted')}>
               Delete for you and {partner?.display_name ?? 'them'}
             </MenuItem>
           )}
@@ -296,30 +320,30 @@ function TextActions({ body, onClose }: { body: string; onClose: () => void }) {
   )
 }
 
-type ComposerProps = { onSend: (message: Outgoing) => Promise<void>; onSendMedia: (file: File) => void; onTyping: () => void }
+type ComposerProps = { onSend: (message: OutgoingMessage) => Promise<void>; onSendMedia: (file: File) => void; onTyping: () => void }
 
 function Composer({ onSend, onSendMedia, onTyping }: ComposerProps) {
-  const [picking, setPicking] = useState(false)
-  const [media, setMedia] = useState<File | null>(null)
-  const pickContact = (c: Contact) => {
-    setPicking(false)
-    onSend({ contact: toCard(c) }).catch(toastError)
+  const [pickingContact, setPickingContact] = useState(false)
+  const [fileToSend, setFileToSend] = useState<File | null>(null)
+  const sendPickedContact = (contact: Contact) => {
+    setPickingContact(false)
+    onSend({ contact: toCard(contact) }).catch(toastError)
   }
   const sendMedia = (file: File) => {
-    setMedia(null)
+    setFileToSend(null)
     onSendMedia(file)
   }
   return (
     <>
       <MessageForm onSend={(body) => onSend({ body })} onTyping={onTyping}>
-        <MediaButton onPick={setMedia} />
-        <IconButton label="Send a contact" onClick={() => setPicking(true)} className="-ml-1 text-muted">
+        <MediaButton onPick={setFileToSend} />
+        <IconButton label="Send a contact" onClick={() => setPickingContact(true)} className="-ml-1 text-muted">
           <ContactRound />
         </IconButton>
       </MessageForm>
-      <MediaSendSheet file={media} onClose={() => setMedia(null)} onSend={sendMedia} />
-      <Sheet open={picking} onClose={() => setPicking(false)} title="Send a contact">
-        <ContactPicker onPick={pickContact} />
+      <MediaSendSheet file={fileToSend} onClose={() => setFileToSend(null)} onSend={sendMedia} />
+      <Sheet open={pickingContact} onClose={() => setPickingContact(false)} title="Send a contact">
+        <ContactPicker onPick={sendPickedContact} />
       </Sheet>
     </>
   )
@@ -358,7 +382,8 @@ function useDraft(onSend: (body: string) => Promise<void>, onTyping: () => void)
     setText('')
     input.current?.focus()
     onSend(body).catch((e) => {
-      setText((t) => t || body)
+      // Put the message back, unless something new has been typed since.
+      setText((current) => current || body)
       toastError(e)
     })
   }

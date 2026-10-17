@@ -3,7 +3,7 @@ import { BookUser, ListChecks, MessageCircle, Settings, StickyNote } from 'lucid
 import { useSpace, type SpaceActions } from '../lib/store'
 import { useDocumentVisible, useKeyboardOpen } from '../lib/device'
 import { deviceStorage } from '../lib/device-storage'
-import type { Message } from '../lib/types'
+import type { Member, Message } from '../lib/types'
 import { Avatar, Button, IconButton, Splash, cx, toast, toastError } from '../components/ui'
 import { ChatTab } from './chat'
 import { ContactsTab } from './contacts'
@@ -24,17 +24,20 @@ export function Shell() {
   const { ready, loadError, e2e, decrypting, me } = useSpace()
   const slow = useTakingLong(ready)
   // Wait for the first decryption after unlocking, but don't flash a loading screen for every new message.
-  const [opened, setOpened] = useState(false)
+  const [decryptedSinceUnlock, setDecryptedSinceUnlock] = useState(false)
   useEffect(() => {
-    if (!e2e.unlocked) setOpened(false)
-    else if (!decrypting) setOpened(true)
+    if (!e2e.unlocked) setDecryptedSinceUnlock(false)
+    else if (!decrypting) setDecryptedSinceUnlock(true)
   }, [e2e.unlocked, decrypting])
 
-  if (!ready) return loadError || slow ? <LoadProblem error={loadError} /> : <Splash />
+  if (!ready) {
+    if (loadError || slow) return <LoadProblem error={loadError} />
+    return <Splash />
+  }
   if (!e2e.ready) return <Splash />
   if (!e2e.enabled) return <SetUpScreen />
   if (!e2e.unlocked) return <UnlockScreen />
-  if (!opened) return <Splash />
+  if (!decryptedSinceUnlock) return <Splash />
   if (!me?.display_name) return <NameScreen />
   return <ShellReady />
 }
@@ -43,8 +46,8 @@ function useTakingLong(ready: boolean) {
   const [slow, setSlow] = useState(false)
   useEffect(() => {
     if (ready) return
-    const t = setTimeout(() => setSlow(true), 12_000)
-    return () => clearTimeout(t)
+    const timer = setTimeout(() => setSlow(true), 12_000)
+    return () => clearTimeout(timer)
   }, [ready])
   return slow
 }
@@ -64,7 +67,8 @@ function ShellReady() {
   const nav = useNavState()
   const [settingsOpen, setSettingsOpen] = useState(false)
   const keyboardOpen = useKeyboardOpen()
-  const unread = useUnread(space!.id, messages, userId, nav.tab === 'chat')
+  const unread = useUnreadCount(space!.id, messages, userId, nav.tab === 'chat')
+  useUnreadBadge(unread)
   useTidyUpOnce(actions)
   return (
     <NavContext.Provider value={nav}>
@@ -86,7 +90,9 @@ function useTidyUpOnce(actions: SpaceActions) {
     upgraded.current = true
     actions.encryption
       .upgradeLegacy()
-      .then((n) => n && toast(`Encrypted ${n} older item${n === 1 ? '' : 's'}`))
+      .then((count) => {
+        if (count > 0) toast(`Encrypted ${count} older item${count === 1 ? '' : 's'}`)
+      })
       .catch(toastError)
   }, [actions])
   useEffect(() => {
@@ -96,7 +102,7 @@ function useTidyUpOnce(actions: SpaceActions) {
 
 function useNavState(): Nav {
   const [tab, setTabState] = useState<Tab>(() => (deviceStorage.get('duo:tab') as Tab | null) ?? 'chat')
-  const [focusContactId, setFocusContactId] = useState<string | null>(null)
+  const [contactIdToOpen, setFocusContactId] = useState<string | null>(null)
   return useMemo(() => {
     const setTab = (t: Tab) => {
       setTabState(t)
@@ -106,34 +112,49 @@ function useNavState(): Nav {
       setFocusContactId(id)
       setTab('contacts')
     }
-    return { tab, setTab, openContact, focusContactId, clearFocusContact: () => setFocusContactId(null) }
-  }, [tab, focusContactId])
+    return { tab, setTab, openContact, contactIdToOpen, clearContactIdToOpen: () => setFocusContactId(null) }
+  }, [tab, contactIdToOpen])
 }
 
 // Their messages newer than the last one you saw with Chat open; on a new device, history so far is read.
 // Only server timestamps are compared, so a skewed phone clock can't hide messages.
-function useUnread(spaceId: string, messages: Message[], userId: string, chatOpen: boolean): number {
+function useUnreadCount(spaceId: string, messages: Message[], userId: string, chatOpen: boolean): number {
   const visible = useDocumentVisible()
   const readKey = `duo:lastRead:${spaceId}`
-  const latest = messages.findLast((m) => !m.pending)
-  const [lastRead, setLastRead] = useState(() => deviceStorage.get(readKey) ?? latest?.created_at ?? new Date(0).toISOString())
-  useEffect(() => deviceStorage.set(readKey, lastRead), [readKey, lastRead])
+  const newestDelivered = messages.findLast((m) => !m.pending)
+  const [lastReadAt, setLastReadAt] = useState(() => deviceStorage.get(readKey) ?? newestDelivered?.created_at ?? new Date(0).toISOString())
   useEffect(() => {
-    if (latest && chatOpen && visible && Date.parse(latest.created_at) > Date.parse(lastRead)) setLastRead(latest.created_at)
-  }, [latest, chatOpen, visible, lastRead])
-  const unread = messages.filter((m) => m.sender_id !== userId && Date.parse(m.created_at) > Date.parse(lastRead)).length
+    deviceStorage.set(readKey, lastReadAt)
+  }, [readKey, lastReadAt])
+  useEffect(() => {
+    const seeingNewer =
+      newestDelivered !== undefined && chatOpen && visible && Date.parse(newestDelivered.created_at) > Date.parse(lastReadAt)
+    if (seeingNewer) setLastReadAt(newestDelivered.created_at)
+  }, [newestDelivered, chatOpen, visible, lastReadAt])
+  const lastReadMs = Date.parse(lastReadAt)
+  return messages.filter((m) => m.sender_id !== userId && Date.parse(m.created_at) > lastReadMs).length
+}
+
+/** Shows the unread count in the page title and on the app icon. */
+function useUnreadBadge(unread: number) {
   useEffect(() => {
     document.title = unread ? `(${unread}) Duo` : 'Duo'
     if (unread) navigator.setAppBadge?.(unread).catch(() => {})
     else navigator.clearAppBadge?.().catch(() => {})
   }, [unread])
-  return unread
+}
+
+function partnerStatus(partner: Member | null, typing: boolean, online: boolean) {
+  if (!partner) return 'Waiting for your person to join'
+  const name = partner.display_name ?? 'Your person'
+  if (typing) return `${name} is typing…`
+  if (online) return `${name} · online`
+  return name
 }
 
 function ShellHeader({ onSettings }: { onSettings: () => void }) {
   const { space, partner, partnerOnline, partnerTyping } = useSpace()
-  const name = partner?.display_name ?? 'Your person'
-  const status = !partner ? 'Waiting for your person to join' : partnerTyping ? `${name} is typing…` : partnerOnline ? `${name} · online` : name
+  const status = partnerStatus(partner, partnerTyping, partnerOnline)
   return (
     <header className="shrink-0 border-b border-line bg-bg pt-[env(safe-area-inset-top)]">
       <div className="flex h-14 items-center gap-3 pr-2 pl-4">

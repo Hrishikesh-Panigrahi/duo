@@ -9,7 +9,7 @@ import {
   encryptMessage,
   encryptRecord,
   keyMatches,
-  makeCheck,
+  makeKeyCheck,
   newSalt,
 } from './e2e'
 
@@ -64,7 +64,7 @@ describe('end-to-end encryption', () => {
   })
 
   it('tells the right passphrase from a wrong one using the check value', async () => {
-    const check = await makeCheck(key, ids.spaceId)
+    const check = await makeKeyCheck(key, ids.spaceId)
     expect(await keyMatches(await deriveKey('correct horse battery staple', salt), ids.spaceId, check)).toBe(true)
     expect(await keyMatches(await deriveKey('wrong passphrase!!', salt), ids.spaceId, check)).toBe(false)
     expect(await keyMatches(key, 'another-space', check)).toBe(false)

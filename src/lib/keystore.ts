@@ -2,24 +2,24 @@
 // Without IndexedDB (some private modes) the key stays in memory and the passphrase is asked for next time.
 
 const DB_NAME = 'duo-keys'
-const STORE = 'keys'
+const STORE_NAME = 'keys'
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
-    req.onupgradeneeded = () => req.result.createObjectStore(STORE)
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    const request = indexedDB.open(DB_NAME, 1)
+    request.onupgradeneeded = () => request.result.createObjectStore(STORE_NAME)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
   })
 }
 
-async function run<T>(mode: IDBTransactionMode, op: (store: IDBObjectStore) => IDBRequest): Promise<T> {
+async function inTransaction<T>(mode: IDBTransactionMode, makeRequest: (store: IDBObjectStore) => IDBRequest): Promise<T> {
   const db = await openDb()
   try {
     return await new Promise<T>((resolve, reject) => {
-      const req = op(db.transaction(STORE, mode).objectStore(STORE))
-      req.onsuccess = () => resolve(req.result as T)
-      req.onerror = () => reject(req.error)
+      const request = makeRequest(db.transaction(STORE_NAME, mode).objectStore(STORE_NAME))
+      request.onsuccess = () => resolve(request.result as T)
+      request.onerror = () => reject(request.error)
     })
   } finally {
     db.close()
@@ -27,8 +27,8 @@ async function run<T>(mode: IDBTransactionMode, op: (store: IDBObjectStore) => I
 }
 
 export const keystore = {
-  get: (spaceId: string) => run<CryptoKey | undefined>('readonly', (s) => s.get(spaceId)),
-  set: (spaceId: string, key: CryptoKey) => run<void>('readwrite', (s) => s.put(key, spaceId)),
-  remove: (spaceId: string) => run<void>('readwrite', (s) => s.delete(spaceId)),
-  clear: () => run<void>('readwrite', (s) => s.clear()),
+  get: (spaceId: string) => inTransaction<CryptoKey | undefined>('readonly', (store) => store.get(spaceId)),
+  set: (spaceId: string, key: CryptoKey) => inTransaction<void>('readwrite', (store) => store.put(key, spaceId)),
+  remove: (spaceId: string) => inTransaction<void>('readwrite', (store) => store.delete(spaceId)),
+  clear: () => inTransaction<void>('readwrite', (store) => store.clear()),
 }

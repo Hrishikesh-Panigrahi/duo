@@ -1,4 +1,5 @@
 // View-once photos and videos: prepared on the phone, then encrypted and kept only until opened or expired.
+import { MS_PER_DAY } from './dates'
 import type { MediaInfo } from './types'
 
 /** Leaves headroom under the Free plan's 50 MB per-file limit for encryption overhead. */
@@ -11,17 +12,20 @@ const JPEG_QUALITY = 0.82
 export const mediaPath = (spaceId: string, messageId: string) => `${spaceId}/${messageId}`
 
 export function isExpired(createdAt: string, now = Date.now()): boolean {
-  return now - new Date(createdAt).getTime() > MEDIA_TTL_DAYS * 86_400_000
+  return now - new Date(createdAt).getTime() > MEDIA_TTL_DAYS * MS_PER_DAY
 }
 
 /** Size check for a file that's sent as-is. Exported for tests. */
 export function checkSize(size: number, what: 'photo' | 'video') {
   if (size <= MAX_MEDIA_BYTES) return
-  const [mb, limit] = [size, MAX_MEDIA_BYTES].map((bytes) => (bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0))
+  // One decimal under 10 MB ("4.5 MB"), whole megabytes above.
+  const toMegabytes = (bytes: number) => (bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)
+  const sizeMb = toMegabytes(size)
+  const limitMb = toMegabytes(MAX_MEDIA_BYTES)
   throw new Error(
     what === 'video'
-      ? `That video is ${mb} MB. Videos can be up to ${limit} MB, so trim it and try again.`
-      : `That photo is ${mb} MB, over the ${limit} MB limit.`,
+      ? `That video is ${sizeMb} MB. Videos can be up to ${limitMb} MB, so trim it and try again.`
+      : `That photo is ${sizeMb} MB, over the ${limitMb} MB limit.`,
   )
 }
 

@@ -2,50 +2,55 @@ import { useMemo } from 'react'
 import { Cake } from 'lucide-react'
 import { useSpace } from '../lib/store'
 import type { Contact, ListItem } from '../lib/types'
-import { daysBetween, formatDay, nextBirthday, relativeDays, todayYMD } from '../lib/dates'
+import { daysBetween, formatDay, nextBirthday, relativeDays, toLocalYMD } from '../lib/dates'
 import { cx, toastError } from '../components/ui'
 import { useNav } from './nav'
-import { CheckCircle, dueTone } from './list-parts'
+import { CheckCircle, daysAwayColor } from './list-parts'
 
 // Birthdays this far out appear under "Coming up"; due items a bit sooner.
-const BIRTHDAY_WINDOW = 30
-const DUE_WINDOW = 14
+const BIRTHDAY_WINDOW_DAYS = 30
+const DUE_WINDOW_DAYS = 14
+const MAX_SHOWN = 8
 
-type Birthday = { kind: 'birthday'; days: number; key: string; contactId: string; name: string; date: string; turning: number | null }
-type DueItem = { kind: 'item'; days: number; key: string; item: ListItem }
+type UpcomingBirthday = { kind: 'birthday'; days: number; key: string; contactId: string; name: string; date: string; turning: number | null }
+type UpcomingDueItem = { kind: 'item'; days: number; key: string; item: ListItem }
 
 /** Soonest first. */
-function upcoming(contacts: Contact[], items: ListItem[], today: string): (Birthday | DueItem)[] {
-  const out: (Birthday | DueItem)[] = []
-  for (const c of contacts) {
-    if (!c.birthday) continue
-    const next = nextBirthday(c.birthday, today)
-    if (next.daysAway > BIRTHDAY_WINDOW) continue
-    out.push({ kind: 'birthday', days: next.daysAway, key: c.id, contactId: c.id, name: c.full_name, date: next.date, turning: next.turning })
+function collectUpcoming(contacts: Contact[], items: ListItem[], today: string): (UpcomingBirthday | UpcomingDueItem)[] {
+  const upcoming: (UpcomingBirthday | UpcomingDueItem)[] = []
+  for (const contact of contacts) {
+    if (!contact.birthday) continue
+    const next = nextBirthday(contact.birthday, today)
+    if (next.daysAway > BIRTHDAY_WINDOW_DAYS) continue
+    upcoming.push({ kind: 'birthday', days: next.daysAway, key: contact.id, contactId: contact.id, name: contact.full_name, date: next.date, turning: next.turning })
   }
-  for (const i of items) {
-    if (!i.due_date || i.done) continue
-    const days = daysBetween(today, i.due_date)
-    if (days <= DUE_WINDOW) out.push({ kind: 'item', days, key: i.id, item: i })
+  for (const item of items) {
+    if (!item.due_date || item.done) continue
+    const days = daysBetween(today, item.due_date)
+    if (days <= DUE_WINDOW_DAYS) upcoming.push({ kind: 'item', days, key: item.id, item })
   }
-  return out.sort((a, b) => a.days - b.days)
+  return upcoming.sort((a, b) => a.days - b.days)
 }
 
 export function ComingUp({ onOpenList }: { onOpenList: (id: string) => void }) {
   const { contacts, list_items } = useSpace()
-  const today = todayYMD()
-  const soon = useMemo(() => upcoming(contacts, list_items, today), [contacts, list_items, today])
+  const today = toLocalYMD()
+  const upcoming = useMemo(() => collectUpcoming(contacts, list_items, today), [contacts, list_items, today])
   return (
     <section>
       <h2 className="mb-3 text-lg font-semibold">Coming up</h2>
-      {soon.length === 0 ? (
+      {upcoming.length === 0 ? (
         <p className="rounded-2xl border border-dashed border-line p-4 text-sm text-muted">
           Nothing in the next few weeks. Birthdays from your contacts and list items with due dates show up here.
         </p>
       ) : (
         <div className="divide-y divide-line overflow-hidden rounded-2xl border border-line bg-surface">
-          {soon.slice(0, 8).map((u) =>
-            u.kind === 'birthday' ? <BirthdaySoon key={u.key} birthday={u} /> : <DueSoon key={u.key} due={u} onOpenList={onOpenList} />,
+          {upcoming.slice(0, MAX_SHOWN).map((entry) =>
+            entry.kind === 'birthday' ? (
+              <BirthdayRow key={entry.key} birthday={entry} />
+            ) : (
+              <DueItemRow key={entry.key} due={entry} onOpenList={onOpenList} />
+            ),
           )}
         </div>
       )}
@@ -53,28 +58,28 @@ export function ComingUp({ onOpenList }: { onOpenList: (id: string) => void }) {
   )
 }
 
-function BirthdaySoon({ birthday: b }: { birthday: Birthday }) {
+function BirthdayRow({ birthday }: { birthday: UpcomingBirthday }) {
   const nav = useNav()
   return (
-    <button onClick={() => nav.openContact(b.contactId)} className="flex w-full items-center gap-1 py-1 pr-4 text-left hover:bg-surface-2">
+    <button onClick={() => nav.openContact(birthday.contactId)} className="flex w-full items-center gap-1 py-1 pr-4 text-left hover:bg-surface-2">
       <span className="flex size-11 shrink-0 items-center justify-center">
         <span className="flex size-8 items-center justify-center rounded-full bg-accent-soft text-accent">
           <Cake className="size-4" />
         </span>
       </span>
       <div className="min-w-0 flex-1 py-2">
-        <div className="truncate font-medium">{b.name}'s birthday</div>
+        <div className="truncate font-medium">{birthday.name}'s birthday</div>
         <div className="text-sm text-muted">
-          {b.turning !== null ? `Turns ${b.turning} · ` : ''}
-          {formatDay(b.date, false)}
+          {birthday.turning !== null ? `Turns ${birthday.turning} · ` : ''}
+          {formatDay(birthday.date, false)}
         </div>
       </div>
-      <span className={cx('text-sm font-medium', dueTone(b.days))}>{relativeDays(b.days)}</span>
+      <span className={cx('text-sm font-medium', daysAwayColor(birthday.days))}>{relativeDays(birthday.days)}</span>
     </button>
   )
 }
 
-function DueSoon({ due: { item, days }, onOpenList }: { due: DueItem; onOpenList: (id: string) => void }) {
+function DueItemRow({ due: { item, days }, onOpenList }: { due: UpcomingDueItem; onOpenList: (id: string) => void }) {
   const { lists, actions } = useSpace()
   const list = lists.find((l) => l.id === item.list_id)
   return (
@@ -84,7 +89,7 @@ function DueSoon({ due: { item, days }, onOpenList }: { due: DueItem; onOpenList
         <div className="truncate font-medium">{item.text}</div>
         <div className="truncate text-sm text-muted">{list ? `${list.emoji ?? '📝'} ${list.title}` : ''}</div>
       </button>
-      <span className={cx('text-sm font-medium', dueTone(days))}>{relativeDays(days)}</span>
+      <span className={cx('text-sm font-medium', daysAwayColor(days))}>{relativeDays(days)}</span>
     </div>
   )
 }

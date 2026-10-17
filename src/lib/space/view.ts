@@ -23,7 +23,7 @@ export type ViewInput = {
   plain: PlainCache
 }
 
-const OWNED = ['id', 'space_id', 'created_by', 'created_at'] as const
+const STORED_FIELDS = ['id', 'space_id', 'created_by', 'created_at'] as const
 
 export type SpaceView = {
   contacts: Contact[]
@@ -37,60 +37,83 @@ export type SpaceView = {
   decrypting: boolean
 }
 
+/** Contacts A to Z, ignoring case and accents. */
+function byName(a: Contact, b: Contact): number {
+  return a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })
+}
+
+function pinnedThenNewest(a: Note, b: Note): number {
+  if (a.pinned !== b.pinned) return a.pinned ? -1 : 1
+  return Date.parse(b.updated_at) - Date.parse(a.updated_at)
+}
+
 class PlainReader {
   decrypting = false
 
   // Once encryption is on, a row without ciphertext can only have been written around the app.
   constructor(
     private readonly plain: PlainCache,
-    private readonly encrypted: boolean,
+    private readonly encryptionOn: boolean,
   ) {}
 
-  read<T>(cipher: string | null | undefined, context: string, fallback: () => T): T | null {
-    if (!cipher) return this.encrypted ? null : fallback()
-    const v = this.plain.get(cacheKey(context, cipher))
-    if (v === undefined) this.decrypting = true
-    return v === undefined || v === FAILED ? null : (v as T)
-  }
-
-  /** Each readable row's content, plus the stored fields named in `keep`. */
-  rows<R extends { cipher: string | null }, C, K extends keyof R>(rows: R[], context: (r: R) => string, old: (r: R) => C, keep: readonly K[]) {
-    return rows.flatMap((r) => {
-      const content = this.read(r.cipher, context(r), () => old(r))
-      if (!content) return []
-      return [{ ...content, ...(Object.fromEntries(keep.map((k) => [k, r[k]])) as Pick<R, K>) }]
-    })
-  }
-
-  message(r: StoredMessage, spaceId: string): Message | null {
-    const base = {
-      id: r.id,
-      space_id: r.space_id,
-      sender_id: r.sender_id,
-      created_at: r.created_at,
-      has_media: r.has_media ?? false,
-      media_opened_at: r.media_opened_at ?? null,
-      media_direct: r.media_direct ?? false,
-      pending: r.pending,
+  read<T>(cipher: string | null | undefined, context: string, readLegacy: () => T): T | null {
+    if (!cipher) return this.encryptionOn ? null : readLegacy()
+    const plaintext = this.plain.get(cacheKey(context, cipher))
+    if (plaintext === undefined) {
+      this.decrypting = true
+      return null
     }
-    if (!r.cipher) return this.encrypted ? null : { ...base, body: r.body ?? null, contact: r.contact ?? null, media: null }
-    const v = this.plain.get(cacheKey(contexts.message({ spaceId, senderId: r.sender_id, messageId: r.id }), r.cipher))
-    if (v === undefined) return { ...base, body: null, contact: null, media: null, locked: true }
-    if (v === FAILED) return { ...base, body: null, contact: null, media: null, undecryptable: true }
-    const content = v as MessageContent
+    if (plaintext === FAILED) return null
+    return plaintext as T
+  }
+
+  /** Each readable row's content, plus the stored fields named in `storedFields`. */
+  readRows<R extends { cipher: string | null }, C, K extends keyof R>(
+    rows: R[],
+    contextOf: (row: R) => string,
+    readLegacy: (row: R) => C,
+    storedFields: readonly K[],
+  ): (C & Pick<R, K>)[] {
+    const readable: (C & Pick<R, K>)[] = []
+    for (const row of rows) {
+      const content = this.read(row.cipher, contextOf(row), () => readLegacy(row))
+      if (!content) continue
+      const stored = {} as Pick<R, K>
+      for (const field of storedFields) stored[field] = row[field]
+      readable.push({ ...content, ...stored })
+    }
+    return readable
+  }
+
+  message(row: StoredMessage, spaceId: string): Message | null {
+    const base = {
+      id: row.id,
+      space_id: row.space_id,
+      sender_id: row.sender_id,
+      created_at: row.created_at,
+      has_media: row.has_media ?? false,
+      media_opened_at: row.media_opened_at ?? null,
+      media_direct: row.media_direct ?? false,
+      pending: row.pending,
+    }
+    if (!row.cipher) return this.encryptionOn ? null : { ...base, body: row.body ?? null, contact: row.contact ?? null, media: null }
+    const plaintext = this.plain.get(cacheKey(contexts.message({ spaceId, senderId: row.sender_id, messageId: row.id }), row.cipher))
+    if (plaintext === undefined) return { ...base, body: null, contact: null, media: null, locked: true }
+    if (plaintext === FAILED) return { ...base, body: null, contact: null, media: null, undecryptable: true }
+    const content = plaintext as MessageContent
     return { ...base, body: content.body, contact: content.contact, media: content.media ?? null }
   }
 }
 
 export function deriveView({ spaceId, rows, space, members, plain }: ViewInput): SpaceView {
   const reader = new PlainReader(plain, Boolean(space?.e2e_salt))
-  const contacts = reader.rows(rows.contacts, (r) => contexts.contact(spaceId, r.id), legacy.contact, [...OWNED, 'updated_at'])
-  const notes = reader.rows(rows.notes, (r) => contexts.note(spaceId, r.id), legacy.note, [...OWNED, 'updated_at'])
+  const contacts = reader.readRows(rows.contacts, (r) => contexts.contact(spaceId, r.id), legacy.contact, [...STORED_FIELDS, 'updated_at'])
+  const notes = reader.readRows(rows.notes, (r) => contexts.note(spaceId, r.id), legacy.note, [...STORED_FIELDS, 'updated_at'])
   const view = {
-    contacts: contacts.sort((a, b) => a.full_name.localeCompare(b.full_name, undefined, { sensitivity: 'base' })),
-    notes: notes.sort((a, b) => Number(b.pinned) - Number(a.pinned) || Date.parse(b.updated_at) - Date.parse(a.updated_at)),
-    lists: reader.rows(rows.lists, (r) => contexts.list(spaceId, r.id), legacy.list, OWNED),
-    list_items: reader.rows(rows.list_items, (r) => contexts.item(spaceId, r.list_id, r.id), legacy.item, [...OWNED, 'list_id']),
+    contacts: contacts.sort(byName),
+    notes: notes.sort(pinnedThenNewest),
+    lists: reader.readRows(rows.lists, (r) => contexts.list(spaceId, r.id), legacy.list, STORED_FIELDS),
+    list_items: reader.readRows(rows.list_items, (r) => contexts.item(spaceId, r.list_id, r.id), legacy.item, [...STORED_FIELDS, 'list_id']),
     messages: rows.messages.flatMap((r) => reader.message(r, spaceId) ?? []),
     space: space && { ...space, name: reader.read(space.name_cipher, contexts.spaceName(spaceId), () => space.name) },
     members: members.map((m) => {
@@ -101,14 +124,14 @@ export function deriveView({ spaceId, rows, space, members, plain }: ViewInput):
   return { ...view, decrypting: reader.decrypting }
 }
 
-export type Decryption = { key: string; run: () => Promise<unknown> }
+export type DecryptionJob = { cacheKey: string; decrypt: () => Promise<unknown> }
 
 /** Anything that decrypts but isn't the shape it should be counts as undecryptable. */
-function checkedJob(key: string, run: () => Promise<unknown>, valid: (v: unknown) => boolean): Decryption {
+function checkedJob(entryKey: string, decrypt: () => Promise<unknown>, valid: (v: unknown) => boolean): DecryptionJob {
   return {
-    key,
-    run: async () => {
-      const value = await run()
+    cacheKey: entryKey,
+    decrypt: async () => {
+      const value = await decrypt()
       if (!valid(value)) throw new Error('Not the expected shape')
       return value
     },
@@ -119,24 +142,26 @@ function checkedJob(key: string, run: () => Promise<unknown>, valid: (v: unknown
 export function pendingDecryptions(
   key: CryptoKey,
   { spaceId, rows, space, members }: Omit<ViewInput, 'plain'>,
-  known: (cacheKey: string) => boolean,
-): Decryption[] {
-  const jobs: Decryption[] = []
-  const add = (context: string, cipher: string | null | undefined, valid: (v: unknown) => boolean, run: (c: string) => Promise<unknown>) => {
-    if (cipher && !known(cacheKey(context, cipher))) jobs.push(checkedJob(cacheKey(context, cipher), () => run(cipher), valid))
+  isDoneOrInFlight: (cacheKey: string) => boolean,
+): DecryptionJob[] {
+  const jobs: DecryptionJob[] = []
+  const addJob = (context: string, cipher: string | null | undefined, valid: (v: unknown) => boolean, decrypt: (c: string) => Promise<unknown>) => {
+    if (!cipher) return
+    const entryKey = cacheKey(context, cipher)
+    if (!isDoneOrInFlight(entryKey)) jobs.push(checkedJob(entryKey, () => decrypt(cipher), valid))
   }
-  const addRecord = (context: string, cipher: string | null | undefined, valid: (v: unknown) => boolean) =>
-    add(context, cipher, valid, (c) => decryptRecord(key, context, c))
+  const addRecordJob = (context: string, cipher: string | null | undefined, valid: (v: unknown) => boolean) =>
+    addJob(context, cipher, valid, (c) => decryptRecord(key, context, c))
 
-  for (const r of rows.contacts) addRecord(contexts.contact(spaceId, r.id), r.cipher, shapes.contact)
-  for (const r of rows.notes) addRecord(contexts.note(spaceId, r.id), r.cipher, shapes.note)
-  for (const r of rows.lists) addRecord(contexts.list(spaceId, r.id), r.cipher, shapes.list)
-  for (const r of rows.list_items) addRecord(contexts.item(spaceId, r.list_id, r.id), r.cipher, shapes.item)
-  for (const r of rows.messages) {
-    const ids: MessageIds = { spaceId, senderId: r.sender_id, messageId: r.id }
-    add(contexts.message(ids), r.cipher, shapes.message, (c) => decryptMessage(key, ids, c))
+  for (const row of rows.contacts) addRecordJob(contexts.contact(spaceId, row.id), row.cipher, shapes.contact)
+  for (const row of rows.notes) addRecordJob(contexts.note(spaceId, row.id), row.cipher, shapes.note)
+  for (const row of rows.lists) addRecordJob(contexts.list(spaceId, row.id), row.cipher, shapes.list)
+  for (const row of rows.list_items) addRecordJob(contexts.item(spaceId, row.list_id, row.id), row.cipher, shapes.item)
+  for (const row of rows.messages) {
+    const ids: MessageIds = { spaceId, senderId: row.sender_id, messageId: row.id }
+    addJob(contexts.message(ids), row.cipher, shapes.message, (c) => decryptMessage(key, ids, c))
   }
-  if (space) addRecord(contexts.spaceName(spaceId), space.name_cipher, shapes.name)
-  for (const m of members) addRecord(contexts.memberName(spaceId, m.user_id), m.display_name_cipher, shapes.name)
+  if (space) addRecordJob(contexts.spaceName(spaceId), space.name_cipher, shapes.name)
+  for (const member of members) addRecordJob(contexts.memberName(spaceId, member.user_id), member.display_name_cipher, shapes.name)
   return jobs
 }

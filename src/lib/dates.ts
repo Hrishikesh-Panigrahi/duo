@@ -3,6 +3,8 @@
 /** Birthdays stored with this year have no known year (iOS uses the same trick). */
 export const NO_YEAR = 1604
 
+export const MS_PER_DAY = 86_400_000
+
 export type YMD = { y: number; m: number; d: number }
 
 export function parseYMD(s: string): YMD {
@@ -14,49 +16,57 @@ export function toYMDString({ y, m, d }: YMD): string {
   return `${String(y).padStart(4, '0')}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`
 }
 
-export function todayYMD(now = new Date()): string {
+export function toLocalYMD(now = new Date()): string {
   return toYMDString({ y: now.getFullYear(), m: now.getMonth() + 1, d: now.getDate() })
 }
 
-/** Whole calendar days from a to b (negative if b is earlier). DST-proof. */
-export function daysBetween(a: string, b: string): number {
-  const x = parseYMD(a)
-  const y = parseYMD(b)
-  return Math.round((Date.UTC(y.y, y.m - 1, y.d) - Date.UTC(x.y, x.m - 1, x.d)) / 86_400_000)
+/** Whole calendar days from `from` to `to` (negative if `to` is earlier). DST-proof. */
+export function daysBetween(from: string, to: string): number {
+  const start = parseYMD(from)
+  const end = parseYMD(to)
+  const startMs = Date.UTC(start.y, start.m - 1, start.d)
+  const endMs = Date.UTC(end.y, end.m - 1, end.d)
+  return Math.round((endMs - startMs) / MS_PER_DAY)
 }
 
-/** Next occurrence of a birthday on or after `today`. Feb 29 falls on Feb 28 in other years. */
-export function nextBirthday(birthday: string, today: string): { date: string; daysAway: number; turning: number | null } {
-  const b = parseYMD(birthday)
+type Birthday = { date: string; daysAway: number; turning: number | null }
+
+/** The birthday as it falls in `year`, counted from `today`. Feb 29 falls on Feb 28 in other years. */
+function birthdayIn(year: number, born: YMD, today: string): Birthday {
+  const isLeapYear = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
+  const date = toYMDString({ y: year, m: born.m, d: born.m === 2 && born.d === 29 && !isLeapYear ? 28 : born.d })
+  return { date, daysAway: daysBetween(today, date), turning: born.y === NO_YEAR ? null : year - born.y }
+}
+
+/** Next occurrence of a birthday on or after `today`: this year's, else next year's. */
+export function nextBirthday(birthday: string, today: string): Birthday {
+  const born = parseYMD(birthday)
   const thisYear = parseYMD(today).y
-  const [thisTime, nextTime] = [thisYear, thisYear + 1].map((y) => {
-    const leap = (y % 4 === 0 && y % 100 !== 0) || y % 400 === 0
-    const date = toYMDString({ y, m: b.m, d: b.m === 2 && b.d === 29 && !leap ? 28 : b.d })
-    return { date, daysAway: daysBetween(today, date), turning: b.y === NO_YEAR ? null : y - b.y }
-  })
-  return thisTime.daysAway >= 0 ? thisTime : nextTime
+  const thisTime = birthdayIn(thisYear, born, today)
+  return thisTime.daysAway >= 0 ? thisTime : birthdayIn(thisYear + 1, born, today)
 }
 
-const monthFmt = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
-const fullFmt = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+const dayMonthFormat = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short' })
+const dayMonthYearFormat = new Intl.DateTimeFormat(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 
 export function formatDay(s: string, withYear = true): string {
   const { y, m, d } = parseYMD(s)
+  // A day with no year is formatted in 2000, a leap year, so 29 Feb still formats.
   const date = new Date(y === NO_YEAR ? 2000 : y, m - 1, d)
-  return (withYear && y !== NO_YEAR ? fullFmt : monthFmt).format(date)
+  return (withYear && y !== NO_YEAR ? dayMonthYearFormat : dayMonthFormat).format(date)
 }
 
-const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
+const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' })
 
 /** "just now", "5 minutes ago", "yesterday", then a plain date. */
-export function ago(iso: string, now = Date.now()): string {
-  const s = (now - new Date(iso).getTime()) / 1000
-  if (s < 60) return 'just now'
-  if (s < 3600) return rtf.format(-Math.floor(s / 60), 'minute')
-  if (s < 86_400) return rtf.format(-Math.floor(s / 3600), 'hour')
-  const days = -daysBetween(todayYMD(new Date(now)), todayYMD(new Date(iso)))
-  if (days < 7) return rtf.format(-days, 'day')
-  return formatDay(todayYMD(new Date(iso)))
+export function timeAgo(iso: string, now = Date.now()): string {
+  const secondsAgo = (now - new Date(iso).getTime()) / 1000
+  if (secondsAgo < 60) return 'just now'
+  if (secondsAgo < 3600) return relativeTime.format(-Math.floor(secondsAgo / 60), 'minute')
+  if (secondsAgo < 86_400) return relativeTime.format(-Math.floor(secondsAgo / 3600), 'hour')
+  const daysAgo = daysBetween(toLocalYMD(new Date(iso)), toLocalYMD(new Date(now)))
+  if (daysAgo < 7) return relativeTime.format(-daysAgo, 'day')
+  return formatDay(toLocalYMD(new Date(iso)))
 }
 
 export function relativeDays(days: number): string {

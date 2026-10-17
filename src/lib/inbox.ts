@@ -2,34 +2,38 @@
 // exactly as they arrived: still end-to-end encrypted.
 
 const DB_NAME = 'duo-inbox'
-const STORE = 'media'
+const STORE_NAME = 'media'
 const BY_TIME = 'receivedAt'
 
 export type InboxEntry = { messageId: string; bytes: ArrayBuffer; receivedAt: number }
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, 1)
-    req.onupgradeneeded = () => {
-      const store = req.result.createObjectStore(STORE, { keyPath: 'messageId' })
+    const request = indexedDB.open(DB_NAME, 1)
+    request.onupgradeneeded = () => {
+      const store = request.result.createObjectStore(STORE_NAME, { keyPath: 'messageId' })
       store.createIndex(BY_TIME, BY_TIME)
     }
-    req.onsuccess = () => resolve(req.result)
-    req.onerror = () => reject(req.error)
+    request.onsuccess = () => resolve(request.result)
+    request.onerror = () => reject(request.error)
   })
 }
 
-async function run<T>(mode: IDBTransactionMode, op: (store: IDBObjectStore, done: (v: T) => void) => IDBRequest | void): Promise<T> {
+/** `makeRequest` returns the request whose result is the answer, or calls `resolveWith` itself (for cursors). */
+async function inTransaction<T>(
+  mode: IDBTransactionMode,
+  makeRequest: (store: IDBObjectStore, resolveWith: (value: T) => void) => IDBRequest | void,
+): Promise<T> {
   const db = await openDb()
   try {
     return await new Promise<T>((resolve, reject) => {
-      const tx = db.transaction(STORE, mode)
-      tx.onerror = () => reject(tx.error)
-      tx.onabort = () => reject(tx.error)
-      const req = op(tx.objectStore(STORE), resolve)
+      const transaction = db.transaction(STORE_NAME, mode)
+      transaction.onerror = () => reject(transaction.error)
+      transaction.onabort = () => reject(transaction.error)
+      const request = makeRequest(transaction.objectStore(STORE_NAME), resolve)
       // A write only counts once it's committed to disk.
-      if (mode === 'readwrite') tx.oncomplete = () => resolve(req?.result as T)
-      else if (req) req.onsuccess = () => resolve(req.result as T)
+      if (mode === 'readwrite') transaction.oncomplete = () => resolve(request?.result as T)
+      else if (request) request.onsuccess = () => resolve(request.result as T)
     })
   } finally {
     db.close()
@@ -38,20 +42,23 @@ async function run<T>(mode: IDBTransactionMode, op: (store: IDBObjectStore, done
 
 export const inbox = {
   put: (messageId: string, bytes: ArrayBuffer) =>
-    run<void>('readwrite', (s) => s.put({ messageId, bytes, receivedAt: Date.now() } satisfies InboxEntry)),
-  get: async (messageId: string) => (await run<InboxEntry | undefined>('readonly', (s) => s.get(messageId)))?.bytes,
-  remove: (messageId: string) => run<void>('readwrite', (s) => s.delete(messageId)),
+    inTransaction<void>('readwrite', (store) => store.put({ messageId, bytes, receivedAt: Date.now() } satisfies InboxEntry)),
+  get: async (messageId: string) => {
+    const entry = await inTransaction<InboxEntry | undefined>('readonly', (store) => store.get(messageId))
+    return entry?.bytes
+  },
+  remove: (messageId: string) => inTransaction<void>('readwrite', (store) => store.delete(messageId)),
   /** What's waiting, without loading the files themselves. */
   list: () =>
-    run<{ messageId: string; receivedAt: number }[]>('readonly', (s, done) => {
-      const out: { messageId: string; receivedAt: number }[] = []
-      const req = s.index(BY_TIME).openKeyCursor()
-      req.onsuccess = () => {
-        const c = req.result
-        if (!c) return done(out)
-        out.push({ messageId: String(c.primaryKey), receivedAt: Number(c.key) })
-        c.continue()
+    inTransaction<{ messageId: string; receivedAt: number }[]>('readonly', (store, resolveWith) => {
+      const waiting: { messageId: string; receivedAt: number }[] = []
+      const request = store.index(BY_TIME).openKeyCursor()
+      request.onsuccess = () => {
+        const cursor = request.result
+        if (!cursor) return resolveWith(waiting)
+        waiting.push({ messageId: String(cursor.primaryKey), receivedAt: Number(cursor.key) })
+        cursor.continue()
       }
     }),
-  clear: () => run<void>('readwrite', (s) => s.clear()),
+  clear: () => inTransaction<void>('readwrite', (store) => store.clear()),
 }

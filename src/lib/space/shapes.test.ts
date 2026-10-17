@@ -53,7 +53,7 @@ describe('decrypting', () => {
     const malformed = await encryptRecord(key, contexts.contact(S, 'c2'), { ...contact, full_name: 123 })
     const rows = { ...emptyRows, contacts: [row('c1', good), row('c2', malformed)] }
     const [first, second] = pendingDecryptions(key, { spaceId: S, rows, space: null, members: [] }, () => false)
-    await expect(first.run()).resolves.toEqual(contact)
-    await expect(second.run()).rejects.toThrow('Not the expected shape')
+    await expect(first.decrypt()).resolves.toEqual(contact)
+    await expect(second.decrypt()).rejects.toThrow('Not the expected shape')
   })
 })

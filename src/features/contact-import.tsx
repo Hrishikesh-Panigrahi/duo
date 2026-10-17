@@ -1,11 +1,14 @@
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { FileUp, Smartphone } from 'lucide-react'
 import { useSpace } from '../lib/store'
 import { parseVCards, type ContactCard } from '../lib/vcard'
 import { isIOS } from '../lib/device'
+import { findDuplicate } from '../lib/contact-match'
 import { Avatar, Button, Sheet, cx, toast, toastError } from '../components/ui'
 import { useBusy } from '../components/use-busy'
-import { findExisting } from './contacts'
+
+// A big import lists only this many, so the sheet stays quick to draw; all of them are still imported.
+const PREVIEW_ROWS = 200
 
 export function ImportSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
   return (
@@ -24,9 +27,13 @@ function ImportBody({ onDone }: { onDone: () => void }) {
 /** The Contact Picker API, where the browser has it (Chrome on Android). */
 async function pickFromPhone(): Promise<ContactCard[]> {
   const picked = await navigator.contacts!.select(['name', 'tel', 'email'], { multiple: true })
-  return picked
-    .map((p) => ({ full_name: (p.name?.[0] || p.tel?.[0] || p.email?.[0] || '').trim(), phones: p.tel ?? [], emails: p.email ?? [] }))
-    .filter((c) => c.full_name)
+  const cards: ContactCard[] = []
+  for (const person of picked) {
+    // The name is the first one the phone gives, else the first number or email; a contact with none is left out.
+    const fullName = (person.name?.[0] || person.tel?.[0] || person.email?.[0] || '').trim()
+    if (fullName) cards.push({ full_name: fullName, phones: person.tel ?? [], emails: person.email ?? [] })
+  }
+  return cards
 }
 
 function ImportSource({ onCards }: { onCards: (cards: ContactCard[]) => void }) {
@@ -66,9 +73,9 @@ function VcfFileButton({ primary, onCards }: { primary: boolean; onCards: (cards
         accept=".vcf,text/vcard,text/x-vcard"
         hidden
         onChange={(e) => {
-          const f = e.target.files?.[0]
+          const file = e.target.files?.[0]
           e.target.value = ''
-          if (f) read(f).catch(toastError)
+          if (file) read(file).catch(toastError)
         }}
       />
     </>
@@ -100,11 +107,11 @@ function ImportReview({ cards, onBack, onDone }: { cards: ContactCard[]; onBack:
   const { contacts, actions } = useSpace()
   const [skipExisting, setSkipExisting] = useState(true)
   const { busy, run } = useBusy({ toast: true })
-  const existing = cards.filter((c) => findExisting(c, contacts))
-  const toImport = skipExisting ? cards.filter((c) => !findExisting(c, contacts)) : cards
+  const duplicates = useMemo(() => new Set(cards.filter((card) => findDuplicate(card, contacts))), [cards, contacts])
+  const toImport = skipExisting ? cards.filter((card) => !duplicates.has(card)) : cards
   async function importAll(chosen: ContactCard[]) {
-    const n = await actions.contacts.importCards(chosen)
-    toast(`Imported ${n} contact${n === 1 ? '' : 's'}`)
+    const importedCount = await actions.contacts.importCards(chosen)
+    toast(`Imported ${importedCount} contact${importedCount === 1 ? '' : 's'}`)
     onDone()
   }
   return (
@@ -112,8 +119,8 @@ function ImportReview({ cards, onBack, onDone }: { cards: ContactCard[]; onBack:
       <p>
         Found <strong>{cards.length}</strong> contact{cards.length === 1 ? '' : 's'}.
       </p>
-      {existing.length > 0 && <SkipExisting count={existing.length} checked={skipExisting} onChange={setSkipExisting} />}
-      <CardList cards={cards} dimExisting={skipExisting} />
+      {duplicates.size > 0 && <SkipExisting count={duplicates.size} checked={skipExisting} onChange={setSkipExisting} />}
+      <CardList cards={cards} duplicates={duplicates} dimDuplicates={skipExisting} />
       <div className="flex gap-2">
         <Button variant="secondary" onClick={onBack}>
           Back
@@ -135,16 +142,17 @@ function SkipExisting({ count, checked, onChange }: { count: number; checked: bo
   )
 }
 
-function CardList({ cards, dimExisting }: { cards: ContactCard[]; dimExisting: boolean }) {
-  const { contacts } = useSpace()
+type CardListProps = { cards: ContactCard[]; duplicates: Set<ContactCard>; dimDuplicates: boolean }
+
+function CardList({ cards, duplicates, dimDuplicates }: CardListProps) {
   return (
     <ul className="max-h-64 divide-y divide-line overflow-y-auto rounded-xl border border-line">
-      {cards.slice(0, 200).map((c, i) => (
-        <li key={i} className={cx('flex items-center gap-3 px-3 py-2', dimExisting && findExisting(c, contacts) && 'opacity-40')}>
-          <Avatar name={c.full_name} size={32} />
+      {cards.slice(0, PREVIEW_ROWS).map((card, i) => (
+        <li key={i} className={cx('flex items-center gap-3 px-3 py-2', dimDuplicates && duplicates.has(card) && 'opacity-40')}>
+          <Avatar name={card.full_name} size={32} />
           <div className="min-w-0">
-            <div className="truncate text-sm font-medium">{c.full_name}</div>
-            <div className="truncate text-xs text-muted">{c.phones[0] ?? c.emails[0] ?? ''}</div>
+            <div className="truncate text-sm font-medium">{card.full_name}</div>
+            <div className="truncate text-xs text-muted">{card.phones[0] ?? card.emails[0] ?? ''}</div>
           </div>
         </li>
       ))}

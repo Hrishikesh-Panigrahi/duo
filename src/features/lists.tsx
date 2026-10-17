@@ -11,7 +11,7 @@ export function ListsTab() {
   const { lists } = useSpace()
   const [openListId, setOpenListId] = useState<string | null>(null)
   const [creating, setCreating] = useState(false)
-  const openList = lists.find((l) => l.id === openListId)
+  const openList = lists.find((list) => list.id === openListId)
   if (openList) return <ListView list={openList} onBack={() => setOpenListId(null)} />
   return (
     <div className="h-full overflow-y-auto px-4 pt-4 pb-8">
@@ -23,7 +23,7 @@ export function ListsTab() {
         </Button>
       </div>
       <ListGrid lists={lists} onOpen={setOpenListId} />
-      <ListSheet open={creating} list={null} onClose={() => setCreating(false)} onSaved={(l) => setOpenListId(l.id)} />
+      <ListSheet open={creating} list={null} onClose={() => setCreating(false)} onSaved={(savedList) => setOpenListId(savedList.id)} />
     </div>
   )
 }
@@ -38,25 +38,32 @@ function ListGrid({ lists, onOpen }: { lists: List[]; onOpen: (id: string) => vo
   }
   return (
     <div className="grid grid-cols-2 gap-3">
-      {lists.map((l) => (
-        <ListCard key={l.id} list={l} onOpen={() => onOpen(l.id)} />
+      {lists.map((list) => (
+        <ListCard key={list.id} list={list} onOpen={() => onOpen(list.id)} />
       ))}
     </div>
   )
 }
 
+function progressLabel(total: number, remaining: number) {
+  if (total === 0) return 'Empty'
+  if (remaining === 0) return 'All done'
+  return `${remaining} to do`
+}
+
 function ListCard({ list, onOpen }: { list: List; onOpen: () => void }) {
   const { list_items } = useSpace()
-  const items = list_items.filter((i) => i.list_id === list.id)
-  const left = items.filter((i) => !i.done).length
+  const items = list_items.filter((item) => item.list_id === list.id)
+  const remaining = items.filter((item) => !item.done).length
+  const percentDone = ((items.length - remaining) / items.length) * 100
   return (
     <button onClick={onOpen} className="rounded-2xl border border-line bg-surface p-4 text-left transition hover:border-accent/40">
       <div className="text-2xl leading-none">{list.emoji || '📝'}</div>
       <div className="mt-3 truncate font-semibold">{list.title}</div>
-      <div className="text-sm text-muted">{items.length === 0 ? 'Empty' : left === 0 ? 'All done' : `${left} to do`}</div>
+      <div className="text-sm text-muted">{progressLabel(items.length, remaining)}</div>
       {items.length > 0 && (
         <div className="mt-3 h-1 overflow-hidden rounded-full bg-surface-2">
-          <div className="h-full rounded-full bg-accent" style={{ width: `${((items.length - left) / items.length) * 100}%` }} />
+          <div className="h-full rounded-full bg-accent" style={{ width: `${percentDone}%` }} />
         </div>
       )}
     </button>

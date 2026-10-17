@@ -114,9 +114,10 @@ src/lib/store.tsx      a space's data for the screens (useSpace), wiring togethe
   device-key.ts          this device's key for the space
   plaintext.ts, view.ts  decrypting rows, and turning them into what the screens show
   room.ts                who's online and typing, and the sealed signalling for direct transfers
-  records.ts             the shared ways of writing encrypted rows that every action uses
+  store-actions.ts       RowWriter, the shared ways of writing encrypted rows, and the base class every action uses
   *-actions.ts           everything the screens can do, as useSpace().actions.chat / .contacts / .notes /
                          .lists / .names / .encryption
+src/lib/contact-match.ts  finding a likely duplicate contact, and searching the contact book
 src/lib/direct.ts      phone-to-phone delivery of photos and videos over WebRTC
 src/lib/inbox.ts       where a directly delivered file waits, still encrypted, until it's opened
 src/lib/media.ts       view-once photos and videos: shrinking, size limits, expiry

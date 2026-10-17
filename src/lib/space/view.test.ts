@@ -136,14 +136,14 @@ describe('what still needs decrypting', () => {
       ],
     }
     const jobs = pendingDecryptions(key, { spaceId: S, rows, space: space(true), members: [] }, (k) => k === cacheKey(contexts.note(S, 'n2'), known))
-    expect(jobs.map((j) => j.key)).toEqual([cacheKey(contexts.note(S, 'n1'), cipher)])
-    await expect(jobs[0].run()).resolves.toEqual({ title: 'wifi', body: 'hunter2', pinned: false })
+    expect(jobs.map((j) => j.cacheKey)).toEqual([cacheKey(contexts.note(S, 'n1'), cipher)])
+    await expect(jobs[0].decrypt()).resolves.toEqual({ title: 'wifi', body: 'hunter2', pinned: false })
   })
 
   it("a ciphertext moved to another row won't decrypt there", async () => {
     const cipher = await encryptRecord(key, contexts.note(S, 'n1'), { title: 'secret', body: '', pinned: false })
     const rows: Rows = { ...emptyRows, notes: [{ id: 'n2', space_id: S, cipher, created_at: at(1), updated_at: at(1), created_by: ME }] }
     const [job] = pendingDecryptions(key, { spaceId: S, rows, space: space(true), members: [] }, () => false)
-    await expect(job.run()).rejects.toThrow()
+    await expect(job.decrypt()).rejects.toThrow()
   })
 })

@@ -37,7 +37,7 @@ describe('rows as stored', () => {
 
   it('swaps an optimistic row for the confirmed one', () => {
     let rows = rowsReducer(emptyRows, { type: 'upsert', table: 'messages', row: msg('old', '2026-10-16T10:00:00Z', { pending: true }) })
-    rows = rowsReducer(rows, { type: 'confirm', table: 'messages', tempId: 'old', row: msg('new', '2026-10-16T10:00:00Z') })
+    rows = rowsReducer(rows, { type: 'confirm', table: 'messages', replacedId: 'old', row: msg('new', '2026-10-16T10:00:00Z') })
     expect(rows.messages.map((m) => m.id)).toEqual(['new'])
   })
 

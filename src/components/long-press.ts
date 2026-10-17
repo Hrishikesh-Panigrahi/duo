@@ -1,6 +1,9 @@
 // Long-press on touch, right-click on desktop, for opening a menu on something.
 import { useRef, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
 
+/** Moving further than this while held down cancels the press: it's a scroll, not a hold. */
+const MOVE_TOLERANCE_PX = 10
+
 /**
  * The menu opens under a finger that's still down, so the browser's own long-press (selecting a word)
  * and the click from lifting the finger would land on the menu. Holds both off until just after.
@@ -11,18 +14,18 @@ function holdOffNativeLongPress() {
     e.preventDefault()
     e.stopPropagation()
   }
-  const opts = { capture: true }
-  for (const type of types) document.addEventListener(type, block, opts)
+  const captureOption = { capture: true }
+  for (const type of types) document.addEventListener(type, block, captureOption)
   let done = false
   const release = () => {
     if (done) return
     done = true
-    for (const type of types) document.removeEventListener(type, block, opts)
+    for (const type of types) document.removeEventListener(type, block, captureOption)
     window.getSelection()?.removeAllRanges()
   }
   // The click from lifting the finger arrives right after it; a real tap on the menu comes much later.
-  const later = () => setTimeout(release, 400)
-  for (const type of ['pointerup', 'pointercancel', 'touchend', 'touchcancel']) window.addEventListener(type, later, { once: true, capture: true })
+  const releaseSoon = () => setTimeout(release, 400)
+  for (const type of ['pointerup', 'pointercancel', 'touchend', 'touchcancel']) window.addEventListener(type, releaseSoon, { once: true, capture: true })
   setTimeout(release, 3000) // in case the finger-up never arrives
 }
 
@@ -32,7 +35,7 @@ class LongPress {
   private origin: { x: number; y: number } | null = null
   private fired = false
 
-  constructor(private readonly ms: number) {}
+  constructor(private readonly holdMs: number) {}
 
   readonly handlers = {
     onPointerDown: (e: ReactPointerEvent) => this.press(e),
@@ -50,11 +53,11 @@ class LongPress {
     this.fired = false
     this.origin = { x: e.clientX, y: e.clientY }
     const byTouch = e.pointerType !== 'mouse'
-    this.timer = setTimeout(() => this.fire(byTouch), this.ms)
+    this.timer = setTimeout(() => this.fire(byTouch), this.holdMs)
   }
 
   private move(e: ReactPointerEvent) {
-    if (this.origin && Math.hypot(e.clientX - this.origin.x, e.clientY - this.origin.y) > 10) this.cancel()
+    if (this.origin && Math.hypot(e.clientX - this.origin.x, e.clientY - this.origin.y) > MOVE_TOLERANCE_PX) this.cancel()
   }
 
   private rightClick(e: ReactMouseEvent) {
@@ -84,9 +87,9 @@ class LongPress {
   }
 }
 
-export function useLongPress(onLongPress: () => void, ms = 450) {
+export function useLongPress(onLongPress: () => void, holdMs = 450) {
   const press = useRef<LongPress | null>(null)
-  press.current ??= new LongPress(ms)
+  press.current ??= new LongPress(holdMs)
   press.current.onLongPress = onLongPress
   return press.current.handlers
 }

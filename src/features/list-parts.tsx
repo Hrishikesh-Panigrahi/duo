@@ -2,8 +2,10 @@ import { Check } from 'lucide-react'
 import { cx } from '../components/ui'
 
 /** Overdue in red, today or tomorrow in the accent colour, anything later muted. */
-export function dueTone(days: number) {
-  return days < 0 ? 'text-danger' : days <= 1 ? 'text-accent' : 'text-muted'
+export function daysAwayColor(days: number) {
+  if (days < 0) return 'text-danger'
+  if (days <= 1) return 'text-accent'
+  return 'text-muted'
 }
 
 export function CheckCircle({ checked, onToggle, label }: { checked: boolean; onToggle: () => void; label: string }) {

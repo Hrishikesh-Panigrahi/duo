@@ -26,14 +26,14 @@ export type StoreDeps = {
   room: RefObject<Room | null>
 }
 
-export class Records {
+export class RowWriter {
   constructor(private readonly store: StoreDeps) {}
 
-  upsert(table: Table, row: AnyRow) {
+  upsertLocally(table: Table, row: AnyRow) {
     this.store.dispatch({ type: 'upsert', table, row })
   }
 
-  remove(table: Table, id: string) {
+  removeLocally(table: Table, id: string) {
     this.store.dispatch({ type: 'remove', table, id })
   }
 
@@ -51,11 +51,11 @@ export class Records {
   }
 
   /** Saves a new row holding `content`, sealed to the context its new id gives. */
-  async insertSealed<T extends AnyRow>(table: Table, context: (id: string) => string, content: unknown, extra = {}): Promise<T> {
+  async insertSealed<T extends AnyRow>(table: Table, context: (id: string) => string, content: unknown, extraColumns = {}): Promise<T> {
     const id = crypto.randomUUID()
-    const row = { ...extra, id, space_id: this.store.spaceId, cipher: await this.seal(context(id), content) }
+    const row = { ...extraColumns, id, space_id: this.store.spaceId, cipher: await this.seal(context(id), content) }
     const saved = await must<T>(supabase.from(table).insert(row).select().single())
-    this.upsert(table, saved)
+    this.upsertLocally(table, saved)
     return saved
   }
 
@@ -63,22 +63,22 @@ export class Records {
   async updateSealed(table: Exclude<Table, 'messages'>, id: string, context: string, content: unknown) {
     const values = { ...CLEARED[table], cipher: await this.seal(context, content) }
     const before = (this.store.rows.current[table] as AnyRow[]).find((r) => r.id === id)
-    if (before) this.upsert(table, { ...before, ...values })
+    if (before) this.upsertLocally(table, { ...before, ...values })
     try {
-      this.upsert(table, await must<AnyRow>(supabase.from(table).update(values).eq('id', id).select().single()))
+      this.upsertLocally(table, await must<AnyRow>(supabase.from(table).update(values).eq('id', id).select().single()))
     } catch (e) {
-      if (before) this.upsert(table, before)
+      if (before) this.upsertLocally(table, before)
       throw e
     }
   }
 
-  async del(table: Table, id: string) {
+  async deleteRow(table: Table, id: string) {
     await must(supabase.from(table).delete().eq('id', id))
-    this.remove(table, id)
+    this.removeLocally(table, id)
   }
 
   /** The decrypted item to edit; throws if it's gone or not readable yet. */
-  current<T extends { id: string }>(list: T[], id: string): T {
+  requireDecrypted<T extends { id: string }>(list: T[], id: string): T {
     const found = list.find((x) => x.id === id)
     if (!found) throw new Error('That was deleted, or is still unlocking.')
     return found
@@ -89,6 +89,6 @@ export class Records {
 export abstract class StoreActions {
   constructor(
     protected readonly store: StoreDeps,
-    protected readonly records: Records,
+    protected readonly writer: RowWriter,
   ) {}
 }

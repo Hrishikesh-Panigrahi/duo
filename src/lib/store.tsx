@@ -10,7 +10,7 @@ import { useDeviceKey, type DeviceKey } from './space/device-key'
 import { usePlaintext, type Plaintext } from './space/plaintext'
 import { deriveView, type SpaceView } from './space/view'
 import { Room } from './space/room'
-import { Records, type StoreDeps } from './space/records'
+import { RowWriter, type StoreDeps } from './space/store-actions'
 import { ChatActions } from './space/chat-actions'
 import { ContactActions, ListActions, NameActions, NoteActions } from './space/content-actions'
 import { EncryptionActions } from './space/encryption-actions'
@@ -48,36 +48,44 @@ export type SpaceData = SpaceView & {
   actions: SpaceActions
 }
 
-type Stored = ReturnType<typeof useSyncedSpace>
+type SyncedSpace = ReturnType<typeof useSyncedSpace>
 
 /** The space's rows, space and members as stored: loaded, then kept live. */
 function useSyncedSpace(spaceId: string, userId: string, onPartnerMessage: () => void) {
   const [rows, dispatch] = useReducer(rowsReducer, emptyRows)
   const [space, setSpace] = useState<StoredSpace | null>(null)
   const [members, setMembers] = useState<StoredMember[]>([])
-  const [load, setLoad] = useState<{ ready: boolean; error: string | null }>({ ready: false, error: null })
+  const [loadStatus, setLoadStatus] = useState<{ ready: boolean; error: string | null }>({ ready: false, error: null })
   useEffect(() => {
     const sync = new SpaceSync({
       spaceId,
       userId,
       onRows: (loaded) => {
         dispatch({ type: 'load', rows: loaded })
-        setLoad({ ready: true, error: null })
+        setLoadStatus({ ready: true, error: null })
       },
       onSpace: setSpace,
       onMembers: setMembers,
       onChange: (change) => applyChange(dispatch, change),
       onPartnerMessage,
-      onError: (error) => setLoad((l) => ({ ...l, error })),
+      onError: (error) => setLoadStatus((status) => ({ ...status, error })),
     })
-    const reloadWhenBack = () => document.visibilityState === 'visible' && void sync.reload()
-    document.addEventListener('visibilitychange', reloadWhenBack)
+    const stopReloading = reloadOnForeground(sync)
     return () => {
-      document.removeEventListener('visibilitychange', reloadWhenBack)
+      stopReloading()
       sync.close()
     }
   }, [spaceId, userId, onPartnerMessage])
-  return { rows, dispatch, space, setSpace, members, setMembers, ...load }
+  return { rows, dispatch, space, setSpace, members, setMembers, ...loadStatus }
+}
+
+/** Reloads whenever the app comes back to the foreground. Returns a function that stops it. */
+function reloadOnForeground(sync: SpaceSync): () => void {
+  const reloadIfVisible = () => {
+    if (document.visibilityState === 'visible') void sync.reload()
+  }
+  document.addEventListener('visibilitychange', reloadIfVisible)
+  return () => document.removeEventListener('visibilitychange', reloadIfVisible)
 }
 
 function applyChange(dispatch: (a: RowAction) => void, change: RowChange) {
@@ -102,11 +110,11 @@ function usePartnerTyping() {
 
 /** The live room: who's online and typing, and direct transfers. */
 function useRoom(spaceId: string, userId: string, device: DeviceKey, members: RefObject<StoredMember[]>, onTyping: () => void) {
-  const room = useRef<Room | null>(null)
+  const roomRef = useRef<Room | null>(null)
   const [partnerOnline, setPartnerOnline] = useState(false)
   const { key, keyRef } = device
   useEffect(() => {
-    const live = new Room({
+    const room = new Room({
       spaceId,
       userId,
       getKey: () => keyRef.current,
@@ -115,24 +123,24 @@ function useRoom(spaceId: string, userId: string, device: DeviceKey, members: Re
       onTyping,
       onFile: (messageId, bytes) => inbox.put(messageId, bytes),
     })
-    room.current = live
-    const announce = () => live.syncPresence()
-    document.addEventListener('visibilitychange', announce)
+    roomRef.current = room
+    const announcePresence = () => room.syncPresence()
+    document.addEventListener('visibilitychange', announcePresence)
     return () => {
-      document.removeEventListener('visibilitychange', announce)
-      live.close()
-      room.current = null
+      document.removeEventListener('visibilitychange', announcePresence)
+      room.close()
+      roomRef.current = null
     }
   }, [spaceId, userId, keyRef, members, onTyping])
   // Whether this device can take files directly changes with the key (it can't while locked).
-  useEffect(() => room.current?.syncPresence(), [key])
-  return { room, partnerOnline }
+  useEffect(() => roomRef.current?.syncPresence(), [key])
+  return { roomRef, partnerOnline }
 }
 
 type Latest = ReturnType<typeof useLatest>
 
 /** The latest stored state and view, for code that runs outside a render. */
-function useLatest(stored: Stored, view: SpaceView) {
+function useLatest(stored: SyncedSpace, view: SpaceView) {
   const rows = useRef(stored.rows)
   rows.current = stored.rows
   const space = useRef(stored.space)
@@ -144,27 +152,27 @@ function useLatest(stored: Stored, view: SpaceView) {
   return { rows, space, members, view: latestView }
 }
 
-type ActionInputs = { spaceId: string; userId: string; stored: Stored; device: DeviceKey; plaintext: Plaintext; latest: Latest; room: RefObject<Room | null> }
+type ActionInputs = { spaceId: string; userId: string; stored: SyncedSpace; device: DeviceKey; plaintext: Plaintext; latest: Latest; roomRef: RefObject<Room | null> }
 
 /** Everything the screens can do. Created once, so they read the latest state through refs. */
-function useActions({ spaceId, userId, stored, device, plaintext, latest, room }: ActionInputs): SpaceActions {
+function useActions({ spaceId, userId, stored, device, plaintext, latest, roomRef }: ActionInputs): SpaceActions {
   const { dispatch, setSpace, setMembers } = stored
-  const { keyRef: key, setKey } = device
+  const { keyRef, setKey } = device
   const { remember, forget: forgetPlaintext } = plaintext
   const { rows, space, members, view } = latest
   return useMemo(() => {
-    const d: StoreDeps = { spaceId, userId, dispatch, remember, forgetPlaintext, key, setKey, rows, space, members, view, setSpace, setMembers, room }
-    const records = new Records(d)
-    const names = new NameActions(d, records)
+    const deps: StoreDeps = { spaceId, userId, dispatch, remember, forgetPlaintext, key: keyRef, setKey, rows, space, members, view, setSpace, setMembers, room: roomRef }
+    const writer = new RowWriter(deps)
+    const names = new NameActions(deps, writer)
     return {
-      chat: new ChatActions(d, records),
-      contacts: new ContactActions(d, records),
-      notes: new NoteActions(d, records),
-      lists: new ListActions(d, records),
+      chat: new ChatActions(deps, writer),
+      contacts: new ContactActions(deps, writer),
+      notes: new NoteActions(deps, writer),
+      lists: new ListActions(deps, writer),
       names,
-      encryption: new EncryptionActions(d, records, names),
+      encryption: new EncryptionActions(deps, writer, names),
     }
-  }, [spaceId, userId, dispatch, remember, forgetPlaintext, key, setKey, rows, space, members, view, setSpace, setMembers, room])
+  }, [spaceId, userId, dispatch, remember, forgetPlaintext, keyRef, setKey, rows, space, members, view, setSpace, setMembers, roomRef])
 }
 
 function useSpaceStore(spaceId: string, user: User): SpaceData {
@@ -176,8 +184,8 @@ function useSpaceStore(spaceId: string, user: User): SpaceData {
   const { rows, space, members } = stored
   const view = useMemo(() => deriveView({ spaceId, rows, space, members, plain: plaintext.plain }), [spaceId, rows, space, members, plaintext.plain])
   const latest = useLatest(stored, view)
-  const { room, partnerOnline } = useRoom(spaceId, userId, device, latest.members, typing.show)
-  const actions = useActions({ spaceId, userId, stored, device, plaintext, latest, room })
+  const { roomRef, partnerOnline } = useRoom(spaceId, userId, device, latest.members, typing.show)
+  const actions = useActions({ spaceId, userId, stored, device, plaintext, latest, roomRef })
   const partner = view.members.find((m) => m.user_id !== userId) ?? null
   return {
     ...view,
@@ -203,15 +211,19 @@ export function SpaceProvider({ spaceId, user, children }: { spaceId: string; us
 }
 
 export function useSpace(): SpaceData {
-  const v = useContext(SpaceContext)
-  if (!v) throw new Error('useSpace must be used inside <SpaceProvider>')
-  return v
+  const space = useContext(SpaceContext)
+  if (!space) throw new Error('useSpace must be used inside <SpaceProvider>')
+  return space
 }
 
 /** Display name for whoever created a row. */
 export function useAuthorName() {
   const { members, userId } = useSpace()
-  return (id: string | null) => (id === userId ? 'you' : (members.find((m) => m.user_id === id)?.display_name ?? 'your person'))
+  return (id: string | null) => {
+    if (id === userId) return 'you'
+    const author = members.find((m) => m.user_id === id)
+    return author?.display_name ?? 'your person'
+  }
 }
 
 // Realtime channels don't survive hot-swapping this module, so in dev an edit here reloads the page.

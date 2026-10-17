@@ -27,7 +27,7 @@ Before a PR: `npm run typecheck`, `npm test`, `python scripts/mutate.py`, `node 
 
 - `src/lib/e2e.ts`: key derivation, sealing, and the `contexts` every ciphertext is bound to.
 - `src/lib/store.tsx`: `SpaceProvider` (through `useSpaceStore`) wires together rows, sync, device-key, plaintext,
-  view, room, records and the `*-actions.ts` classes from `src/lib/space/`. It also adds the partner-typing timer
+  view, room, store-actions and the `*-actions.ts` classes from `src/lib/space/`. It also adds the partner-typing timer
   and reload-on-foreground. `useSpace()` reads the result; `useAuthorName` is here too.
 - `src/lib/direct.ts`: phone-to-phone WebRTC transfer. `src/lib/inbox.ts` keeps files received that way, still encrypted.
 - `src/features/`: screens and sheets grouped by feature (some files hold several), plus `nav.ts` and `list-parts.tsx`.
@@ -42,7 +42,7 @@ More detail: [docs/architecture.md](docs/architecture.md), [docs/security.md](do
 ## Rules
 
 **Security**
-- Every new content field is encrypted with `encryptRecord` / `encryptMessage` / `encryptBytes` (or `Records`)
+- Every new content field is encrypted with `encryptRecord` / `encryptMessage` / `encryptBytes` (or `RowWriter`)
   under a `contexts.*` string. The database gets a `not valid` check that its plaintext column stays empty.
 - Never change an existing `contexts.*` string, the `v1:` format or the file version byte: every stored row
   would stop decrypting. Add a new context or version instead.
@@ -55,7 +55,12 @@ More detail: [docs/architecture.md](docs/architecture.md), [docs/security.md](do
 
 **Code style**
 - Functions, including components, are at most 29 lines. A longer one means the design needs splitting.
-- Names explain the code. Comments are short and only say why something non-obvious is done.
+- Names explain the code: someone reading it cold should know what a variable, function or file is from its name
+  alone. No cryptic abbreviations (like o, ch or rt); single letters only in tiny lambdas and loop counters.
+  Comments are short and only say why something non-obvious is done.
+- Readable beats clever. A plain `for` loop or a named intermediate variable beats a dense
+  `map`/`filter`/`reduce` chain, a nested ternary or a packed one-liner. Use the compact form only where
+  performance needs it, and say why. A simple `.map` to JSX is fine.
 - Extract a function or class only for a block of 4–5+ lines repeated more than three times. No one- or two-line
   helpers just to dedupe (the `contexts` one-liners stay because they centralise a security format).
 - Match the surrounding code: small classes with short methods, and screens call `useSpace().actions.<area>.<verb>()`.
