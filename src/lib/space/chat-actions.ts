@@ -1,5 +1,5 @@
 // Chat: messages, contact cards, and view-once photos and videos. A photo or video goes straight to the
-// other phone when both apps are open; otherwise it waits in Storage, encrypted, for up to MEDIA_TTL_DAYS.
+// other phone when both apps are open; otherwise it waits in Storage, encrypted, for up to MEDIA_TTL_HOURS.
 import { contexts, decryptBytes, encryptBytes, encryptMessage, type MessageContent, type MessageIds } from '../e2e'
 import { inbox } from '../inbox'
 import { PLAYABLE_TYPE, isExpired, mediaPath, prepareMedia } from '../media'

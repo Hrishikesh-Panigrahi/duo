@@ -36,7 +36,6 @@ Things that have cost time before. Add to this when something surprises you.
   `encrypt_legacy_message`, and only its sender can do that.
 - `supabase/config.toml` enables seeding on `db reset` from `./seed.sql`, but there's no `supabase/seed.sql` in
   the repo. A reset gives empty tables.
-- `App.tsx`'s "not configured" screen says to run only `…_init.sql`, but the app needs all four migrations.
 
 ## Realtime
 
