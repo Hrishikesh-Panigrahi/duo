@@ -13,6 +13,8 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 ROOM, VIEW, DIRECT, INVITE, MEDIA = 'src/lib/space/room.ts', 'src/lib/space/view.ts', 'src/lib/direct.ts', 'src/lib/invite.ts', 'src/lib/media.ts'
 ROOM_T, VIEW_T, DIRECT_T, INVITE_T = 'src/lib/space/room.test.ts', 'src/lib/space/view.test.ts', 'src/lib/direct.test.ts', 'src/lib/invite.test.ts'
 MEDIA_T, SHAPES_T = 'src/lib/media.test.ts', 'src/lib/space/shapes.test.ts'
+E2E, CHAT, SESSION = 'src/lib/e2e.ts', 'src/lib/space/chat-actions.ts', 'src/lib/session.ts'
+E2E_T, CHAT_T, SESSION_T = 'src/lib/e2e.test.ts', 'src/lib/space/chat-actions.test.ts', 'src/lib/session.test.ts'
 # (what breaks, file, exact text to replace, replacement, test file that must fail)
 MUTANTS = [
     ('presence budget raised to 10', ROOM,
@@ -36,6 +38,19 @@ MUTANTS = [
     ('any file type sent and opened', MEDIA,
      "export const PLAYABLE_TYPE = /^(image\\/(?!svg)[\\w.+-]+|video\\/[\\w.+-]+)$/i",
      'export const PLAYABLE_TYPE = /.*/', MEDIA_T),
+    ('signals dated in the future accepted', ROOM, 'Math.abs(Date.now() - at)', '(Date.now() - at)', ROOM_T),
+    ('room joined as a public channel', ROOM, 'config: { private: true,', 'config: { private: false,', ROOM_T),
+    ('signals for someone else, or from a stranger, accepted', DIRECT,
+     'if (signal.to !== selfId || !acceptFrom(signal.from)) return', 'if (false) return', DIRECT_T),
+    ('no cap on transfers at once', DIRECT, 'transfersBySession.size < MAX_INCOMING', 'true', DIRECT_T),
+    ('any file type prepared for sending', MEDIA,
+     "  if (!PLAYABLE_TYPE.test(file.type)) throw new Error('Only photos and videos can be sent.')\n", '', MEDIA_T),
+    ("sender's file type trusted when opening", CHAT,
+     "const type = message.media && PLAYABLE_TYPE.test(message.media.mime) ? message.media.mime : 'application/octet-stream'",
+     "const type = message.media?.mime ?? 'application/octet-stream'", CHAT_T),
+    ('key made exportable', E2E, "    false,\n    ['encrypt', 'decrypt'],\n", "    true,\n    ['encrypt', 'decrypt'],\n", E2E_T),
+    ('a stored-data label changed', E2E, '`duo:msg:${spaceId}', '`duo:message:${spaceId}', E2E_T),
+    ('sign-out keeps the keys', SESSION, 'keystore.clear().catch(() => {}), ', '', SESSION_T),
 ]
 
 missed = 0

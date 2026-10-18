@@ -137,3 +137,24 @@ describe('encrypting everything else', () => {
     expect((await decryptMessage(key, ids, cipher)).media).toEqual(media)
   })
 })
+
+describe('what must never change', () => {
+  it('keeps the key inside the browser: it cannot be exported', async () => {
+    const key = await deriveKey('correct horse battery staple', newSalt())
+    expect(key.extractable).toBe(false)
+    await expect(crypto.subtle.exportKey('raw', key)).rejects.toThrow()
+  })
+
+  it('seals each kind of data under the same label as always, so stored data keeps decrypting', () => {
+    expect(contexts.message({ spaceId: 's', senderId: 'u', messageId: 'm' })).toBe('duo:msg:s:u:m')
+    expect(contexts.media({ spaceId: 's', senderId: 'u', messageId: 'm' })).toBe('duo:media:s:u:m')
+    expect(contexts.contact('s', 'c')).toBe('duo:contact:s:c')
+    expect(contexts.note('s', 'n')).toBe('duo:note:s:n')
+    expect(contexts.list('s', 'l')).toBe('duo:list:s:l')
+    expect(contexts.item('s', 'l', 'i')).toBe('duo:item:s:l:i')
+    expect(contexts.spaceName('s')).toBe('duo:space-name:s')
+    expect(contexts.memberName('s', 'u')).toBe('duo:member-name:s:u')
+    expect(contexts.signal('s')).toBe('duo:signal:s')
+    expect(contexts.check('s')).toBe('duo:check:s')
+  })
+})

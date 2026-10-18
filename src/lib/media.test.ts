@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { MAX_MEDIA_BYTES, PLAYABLE_TYPE, checkSize, fitWithin, isExpired, mediaPath } from './media'
+import { MAX_MEDIA_BYTES, PLAYABLE_TYPE, checkSize, fitWithin, isExpired, mediaPath, prepareMedia } from './media'
 
 describe('view-once media helpers', () => {
   it('rejects videos over the limit with a message that says how big they are', () => {
@@ -35,5 +35,13 @@ describe('view-once media helpers', () => {
 
   it('stores files under the space, named by message', () => {
     expect(mediaPath('s-1', 'm-1')).toBe('s-1/m-1')
+  })
+})
+
+describe('sending a file', () => {
+  it('refuses anything that is not a photo or video, before reading it', async () => {
+    for (const type of ['image/svg+xml', 'text/html', 'application/pdf', '']) {
+      await expect(prepareMedia(new File(['<svg onload="alert(1)"/>'], 'file', { type }))).rejects.toThrow('Only photos and videos can be sent.')
+    }
   })
 })

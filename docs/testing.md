@@ -17,34 +17,31 @@ node scripts/check-doc-names.cjs  # names in the docs' inline code spans still e
 
 | File | Covers |
 | --- | --- |
-| `e2e.test.ts` | Text, contact, list item and member-name round trips. The same key from the same passphrase and salt; a different key with another salt. Fresh IVs. Wrong passphrase. Messages moved to another sender, space or id; files to another id; records to another row, list, field or space. Tampering. The check value |
+| `e2e.test.ts` | Text, contact, list item and member-name round trips. The same key from the same passphrase and salt; a different key with another salt. Fresh IVs. Wrong passphrase. Messages moved to another sender, space or id; files to another id; records to another row, list, field or space. Tampering. The check value. Keys can't be exported. Every context label, pinned |
 | `view.test.ts` | What screens see. Content without ciphertext before and after encryption. What still needs decrypting |
 | `shapes.test.ts` | Accepting what the app writes, rejecting malformed records, and a malformed record that decrypts counting as undecryptable |
-| `room.test.ts` | Presence budget. Announcing whether this device can take files, only once subscribed, and leaving when hidden. Partner presence. Rejoin backoff. Sealed signals. Ignoring replays (past timestamps), forgeries, junk, oversized signals and anything while locked. Passing the partner check through to the link |
+| `room.test.ts` | Presence budget. Announcing whether this device can take files, only once subscribed, and leaving when hidden. Partner presence. Rejoin backoff. Sealed signals. Joining as a private channel. Ignoring replays (past and future timestamps), forgeries, junk, oversized signals and anything while locked. Passing the partner check through to the link |
 | `rows.test.ts` | The stored-rows reducer, including messages still being sent |
-| `direct.test.ts` | Transfer framing: headers, reassembly, non-binary chunks, and more bytes than promised |
+| `direct.test.ts` | Transfer framing: headers, reassembly, non-binary chunks, and more bytes than promised. Answering only offers addressed to this phone from the other member, at most four transfers at once (outgoing ones count). The reason given when a transfer stops early |
+| `chat-actions.test.ts` | Opening a file whose claimed type isn't a photo or video as a plain download (`application/octet-stream`) |
+| `session.test.ts` | Sign-out wiping this device's keys and waiting photos before ending the session, and still signing out if that fails |
 | `invite.test.ts` | Invite links and codes, and dropping saved invites after two weeks |
-| `media.test.ts` | The video size limit, photo scaling, the 24-hour expiry, the `PLAYABLE_TYPE` pattern, storage paths |
+| `media.test.ts` | The video size limit, photo scaling, the 24-hour expiry, the `PLAYABLE_TYPE` pattern, refusing to send anything else, storage paths |
 | `passphrase.test.ts`, `vcard.test.ts`, `dates.test.ts`, `supabase.test.ts` | Passphrase strength; vCard import and export; day counting, birthdays and relative-day labels; error messages |
 
 Tests that need WebCrypto use Node's built-in `crypto.subtle`. Nothing here talks to Supabase.
 
 **Not covered by any unit test:**
-- the `to`/`from` check and `MAX_INCOMING` in `DirectLink.handleSignal`;
-- refusing signals with a future timestamp (only past ones are tested);
-- the room's `private: true` flag (the test's fake channel ignores options);
-- the send refusal in `prepareMedia` and the `application/octet-stream` fallback in `openMedia`;
 - that the write paths (`RowWriter`, `*-actions.ts`) send only ciphertext;
 - `upgradeLegacy` and its upgrade flag, and `useForgetMismatchedKey`;
-- non-extractable keys, and sign-out clearing `duo-keys` and `duo-inbox`;
-- the context strings themselves (only the `v1:` prefix is pinned);
+- the file format's version byte `1` (only the layout's length is checked);
 - the database checks and policies;
 - the CSP.
 
 ### Mutation suite (`scripts/mutate.py`)
 
-The script holds a fixed list of mutants (`MUTANTS`), each breaking one check in `room.ts`, `view.ts`, `direct.ts`, `invite.ts` or
-`media.ts`. For each one it runs the test file that should notice, prints `CAUGHT` or `MISSED`, and always puts the
+The script holds a fixed list of mutants (`MUTANTS`), each breaking one check in `room.ts`, `view.ts`, `direct.ts`, `invite.ts`,
+`media.ts`, `e2e.ts`, `chat-actions.ts` or `session.ts`. For each one it runs the test file that should notice, prints `CAUGHT` or `MISSED`, and always puts the
 file back byte for byte (LF or CRLF). `CAUGHT` only means vitest exited non-zero, so confirm a real failing test (`×`) is listed under it.
 A crash would also count. The script exits 1 if anything was `MISSED`.
 
