@@ -6,13 +6,11 @@ import { PLAYABLE_TYPE, isExpired, mediaPath, prepareMedia } from '../media'
 import { must, serverError, supabase } from '../supabase'
 import { toCard, type Message, type StoredMessage } from '../types'
 import type { ContactCard } from '../vcard'
-import { MESSAGE_LIMIT, type AnyRow } from './rows'
+import type { AnyRow } from './rows'
 import { StoreActions } from './store-actions'
 import { cacheKey } from './view'
 
 const MEDIA_BUCKET = 'media'
-/** A directly delivered file whose message never arrived is dropped after this. */
-const ORPHAN_GRACE_MS = 10 * 60_000
 
 type BeforeInsert = (id: string, ids: MessageIds) => Promise<Record<string, unknown>>
 
@@ -66,7 +64,7 @@ export class ChatActions extends StoreActions {
   async sweepMedia(): Promise<number> {
     const messages = this.store.rows.current.messages
     const messagesById = new Map(messages.map((m) => [m.id, m]))
-    return (await this.sweepStorage(messagesById)) + (await this.sweepInbox(messages, messagesById))
+    return (await this.sweepStorage(messagesById)) + (await this.sweepInbox(messagesById))
   }
 
   async remove(id: string) {
@@ -149,15 +147,15 @@ export class ChatActions extends StoreActions {
     return stalePaths.length
   }
 
-  private async sweepInbox(messages: StoredMessage[], messagesById: Map<string, StoredMessage>): Promise<number> {
-    // A message older than everything loaded could still exist, so only newer files can be orphans.
-    const oldestLoaded = messages.length < MESSAGE_LIMIT ? -Infinity : Date.parse(messages[0].created_at)
+  /** The phone's waiting files are shared by every space, so a file whose message isn't loaded here may belong to
+   * another space: it's only removed once it expires. */
+  private async sweepInbox(messagesById: Map<string, StoredMessage>): Promise<number> {
     let removed = 0
     for (const file of await inbox.list().catch(() => [])) {
       const message = messagesById.get(file.messageId)
-      const orphan = file.receivedAt > oldestLoaded && Date.now() - file.receivedAt > ORPHAN_GRACE_MS
       const expired = isExpired(new Date(file.receivedAt).toISOString())
-      const gone = message ? Boolean(message.media_opened_at) || isExpired(message.created_at) : expired || orphan
+      const openedHere = message !== undefined && (Boolean(message.media_opened_at) || isExpired(message.created_at))
+      const gone = expired || openedHere
       if (!gone) continue
       await inbox.remove(file.messageId).catch(() => {})
       removed++

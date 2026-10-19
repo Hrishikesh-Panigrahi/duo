@@ -4,7 +4,7 @@
 
 Duo is a static PWA. Encryption and nearly all app logic run on the phone. Supabase stores the ciphertext and
 plaintext metadata (ids, who wrote what, timestamps, media flags), enforces access, and runs a few SQL functions:
-creating and joining a space, `enable_e2e`, swapping legacy messages, and marking media opened.
+creating and joining a space, `enable_space_e2e`, swapping legacy messages, and marking media opened.
 
 ```
 phone A ──HTTPS/WSS──▶ Supabase (Postgres + RLS, Auth, Storage, Realtime) ◀──HTTPS/WSS── phone B
@@ -20,11 +20,11 @@ applies them.
 ## Who reads what
 
 Inside a space, screens get data and actions from `useSpace()` ([src/lib/store.tsx](../src/lib/store.tsx)), except
-sign-out, which goes through `signOut()` in `src/lib/session.ts`. Before a space exists, a few places call Supabase
-directly:
+sign-out, which goes through `signOut()` in `src/lib/session.ts`. A few places work outside the open space and
+call Supabase directly:
 - sign-in and password reset (`auth.tsx`);
 - creating or joining a space (`space-setup.tsx`);
-- finding the user's space (`App.tsx`).
+- listing your spaces and summarising them for the switcher (`src/lib/spaces.ts`).
 
 `SpaceProvider` (through `useSpaceStore`) wires together these modules from `src/lib/space/`, and `useSpace()` reads
 the result. `shapes.ts` is used by `view.ts`.
@@ -40,6 +40,28 @@ the result. `shapes.ts` is used by `view.ts`.
 | `store-actions.ts` | `RowWriter`: `seal`, `insertSealed`, `updateSealed`, `deleteRow`, and `upsertLocally` / `removeLocally` for this device's copy only. `StoreActions` is the base class for every action group. |
 | `*-actions.ts` | `useSpace().actions.chat / contacts / notes / lists / names / encryption`. |
 | `room.ts` | `Room`: the private Realtime channel `room:<space id>` for presence, typing and sealed WebRTC signalling. `PresenceGate` throttles presence. |
+
+## Several spaces
+
+- **Which one opens:** `App.tsx` loads your spaces in the order you joined them, and opens the one last opened on
+  this device (`duo:space` in local storage) if it's still yours, otherwise the one you joined first.
+- **Switching:** `SpaceProvider` is keyed by the space id, so switching starts the store, the room and the key
+  afresh. Only the open space has a room, so you show as online only there, and direct transfers only reach you
+  there; in other spaces photos wait in Storage.
+- **The switcher** opens from the space name in the header, or from "Switch space" on the passphrase setup and
+  unlock screens when you're in two or more spaces. For each space it shows:
+  - its name and your person's, decrypted with that space's key saved on this device (`duo-keys`). A space with
+    encryption on whose key isn't saved here shows as locked; one with encryption off shows any plaintext names it
+    still has;
+  - unread messages: theirs newer than this device's last-read time for that space. That time is set when the
+    space's main screen first opens here and moves forward while its Chat tab is open, so a space never opened past
+    the unlock screen on this device shows none.
+- **Invites:** an invite link opened while signed in tries to join that space straight away, alongside the spaces
+  you're in. The server refuses it if you're already in 20, or if it's your own space's code.
+- **Each space keeps its own:** passphrase and key (`duo-keys` holds one per space), upgrade flag, last-read time
+  and member row. Waiting photos (`duo-inbox`) are shared by every space. A space's sweep removes one only when its
+  own loaded message was opened or is more than 24 hours old, or the file itself is more than 24 hours old; a file
+  also goes when a message with its id is deleted, or on sign-out.
 
 ## Writing rows
 
@@ -67,9 +89,10 @@ Other devices get each change over Realtime and decrypt it themselves.
   passphrase from the right one without revealing either. Like any ciphertext, it also lets someone with a copy of
   the database test passphrase guesses offline. PBKDF2 makes each guess slow, and the strength rules in
   `passphrase.ts` reject easily guessed passphrases when one is chosen.
-- **Turning it on:** `enable_e2e` sets the salt and check once, and refuses if they're already set.
+- **Turning it on:** `enable_space_e2e` sets the named space's salt and check once, and clears its plaintext name.
+  It refuses if they're already set, you aren't in that space, or their lengths are out of range.
 - **The one-time upgrade:** the setup form encrypts the space name and this user's name straight after
-  `enable_e2e`. The device that turned encryption on also keeps a `duo:upgrade:<space>` flag in local storage (only
+  `enable_space_e2e`. The device that turned encryption on also keeps a `duo:upgrade:<space>` flag in local storage (only
   in memory if local storage is unavailable). Until `upgradeLegacy` succeeds, it runs each time the main screen
   opens and re-encrypts:
   - the loaded contacts, notes, lists and list items;
@@ -101,8 +124,8 @@ Other devices get each change over Realtime and decrypt it themselves.
   or is more than 24 hours old.
   - A Storage file with no loaded message is removed once the file itself is more than 24 hours old. Only the first
     1000 files are listed.
-  - An inbox file with no loaded message is removed once it's more than 24 hours old, or more than 10 minutes old and
-    newer than the oldest loaded message.
+  - An inbox file whose message isn't loaded here may belong to another space, so it's removed only once it's more
+    than 24 hours old.
 
   Nothing on the server deletes or expires files, and the read policy doesn't check age.
 
@@ -127,6 +150,12 @@ Other devices get each change over Realtime and decrypt it themselves.
    - The members-only room policies (`can_use_room`).
    - `enable_e2e` and `join_space` now clear an older space's plaintext name.
    - `is_member` and `can_access_media` executable by signed-in users only.
+5. **`many_spaces`:**
+   - Drops the one-space-per-account rule (`members_user_id_key`) and indexes `members.user_id` instead.
+   - `create_space` and `join_space` refuse a new space once you're in 20, taking one person's calls in turn (an
+     advisory lock) so simultaneous calls can't get past the cap. `join_space` also refuses your own space's code.
+   - `enable_space_e2e(space, salt, check_value)`. The older `enable_e2e(salt, check_value)` now works only for
+     an account in exactly one space, for app versions from before this migration.
 
 All the ciphertext-only checks are `NOT VALID`: every new insert or update must pass, but rows from before
 encryption are left alone. Content rows are upgraded in place. Messages can't be updated, so they're swapped for

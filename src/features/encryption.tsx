@@ -6,6 +6,7 @@ import { passphraseProblem, suggestPassphrase } from '../lib/passphrase'
 import { Button, Field, Input, errorMessage } from '../components/ui'
 import { useBusy } from '../components/use-busy'
 import { AuthLayout, SignOutLink } from './auth'
+import { SwitchSpaceLink } from './space-switcher'
 
 // Nothing in a space opens until this device has the key; these screens stand in front of the app until then.
 
@@ -135,6 +136,7 @@ export function SetUpScreen() {
         </Button>
       </form>
       <SignOutLink />
+      <SwitchSpaceLink />
     </AuthLayout>
   )
 }
@@ -173,6 +175,7 @@ export function UnlockScreen() {
         </Button>
       </form>
       <SignOutLink />
+      <SwitchSpaceLink />
     </AuthLayout>
   )
 }
