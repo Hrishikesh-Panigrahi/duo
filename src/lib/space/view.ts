@@ -94,6 +94,8 @@ class PlainReader {
       has_media: row.has_media ?? false,
       media_opened_at: row.media_opened_at ?? null,
       media_direct: row.media_direct ?? false,
+      vanishing: row.vanishing ?? false,
+      seen_at: row.seen_at ?? null,
       pending: row.pending,
     }
     if (!row.cipher) return this.encryptionOn ? null : { ...base, body: row.body ?? null, contact: row.contact ?? null, media: null }

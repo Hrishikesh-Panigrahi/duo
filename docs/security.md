@@ -19,6 +19,8 @@ Everything else is visible to Supabase, or to anyone with database or dashboard 
 - who wrote each row (`sender_id`, `created_by`), when (`created_at`, and `updated_at` for contacts and notes), how
   many rows there are, and which list each item is on;
 - which messages are photos or videos, whether each went direct, and when it was opened;
+- whether vanish mode is on, which messages vanish, and when each was seen; and, from `clear_seen_vanishing`
+  calls, when each person comes into or leaves the chat while vanishing messages are loaded;
 - through Realtime: when each person has the app open, whether their device is unlocked (presence `direct`),
   typing pings, and the timing of transfer setup.
 
@@ -44,6 +46,8 @@ Cloudflare's STUN server (`stun.cloudflare.com`) sees both phones' IP addresses 
 - Clearing `e2e_salt`, which sends both apps back to the setup screen (see below).
 
 **Not stopped: someone with one person's login but not the passphrase.**
+- Turning vanish mode on or off. Marking vanishing messages sent to that person as seen (or photos and videos as
+  opened) without reading them, then deleting them, and deleting any other seen vanishing message.
 - Deleting or overwriting contacts, notes, lists and items, or rolling them back to an older ciphertext they've
   seen, or re-inserting deleted ones.
 - Deleting that person's own messages, and any Storage file in the space.

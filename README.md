@@ -10,6 +10,7 @@ It's an installable web app (PWA): open it on your phones, "Add to Home Screen",
   Import from your phone (Android) or a .vcf export (iPhone, Google Contacts).
 - **Chat**: realtime messages, "typing…" and online status, unread badge. Send a contact card to the other person,
   who can save it to their phone in one tap. Long-press a message to copy it, save it as a note, or delete it.
+  **Vanish mode** (Settings → Chat): new messages disappear once they've been seen and the chat is closed.
 - **View-once photos and videos**: opened once, then deleted. If you're both in the app, they go straight from one
   phone to the other and are never stored anywhere else. If not, they wait (encrypted) for up to 24 hours, then are
   deleted unopened. Videos can be up to 45 MB; photos are shrunk on the phone before sending.

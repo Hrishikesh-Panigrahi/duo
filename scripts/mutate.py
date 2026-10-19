@@ -14,9 +14,9 @@ ROOM, VIEW, DIRECT, INVITE, MEDIA = 'src/lib/space/room.ts', 'src/lib/space/view
 ROOM_T, VIEW_T, DIRECT_T, INVITE_T = 'src/lib/space/room.test.ts', 'src/lib/space/view.test.ts', 'src/lib/direct.test.ts', 'src/lib/invite.test.ts'
 MEDIA_T, SHAPES_T = 'src/lib/media.test.ts', 'src/lib/space/shapes.test.ts'
 E2E, CHAT, SESSION = 'src/lib/e2e.ts', 'src/lib/space/chat-actions.ts', 'src/lib/session.ts'
-SPACES, CONTENT = 'src/lib/spaces.ts', 'src/lib/space/content-actions.ts'
+SPACES, CONTENT, VANISH = 'src/lib/spaces.ts', 'src/lib/space/content-actions.ts', 'src/lib/vanish.ts'
 E2E_T, CHAT_T, SESSION_T = 'src/lib/e2e.test.ts', 'src/lib/space/chat-actions.test.ts', 'src/lib/session.test.ts'
-SPACES_T, CONTENT_T = 'src/lib/spaces.test.ts', 'src/lib/space/content-actions.test.ts'
+SPACES_T, CONTENT_T, VANISH_T = 'src/lib/spaces.test.ts', 'src/lib/space/content-actions.test.ts', 'src/lib/vanish.test.ts'
 # (what breaks, file, exact text to replace, replacement, test file that must fail)
 MUTANTS = [
     ('presence budget raised to 10', ROOM,
@@ -59,6 +59,16 @@ MUTANTS = [
     ('the last-opened space forgotten', SPACES, 'if (lastOpened && spaceIds.includes(lastOpened)) return lastOpened', '', SPACES_T),
     ("a locked space's plaintext name shown", SPACES,
      'if (!cipher) return encryptionOn ? null : (plaintext ?? null)', 'if (!cipher) return plaintext ?? null', SPACES_T),
+    ('vanished messages shown again on the next visit', VANISH, 'if (this.seenBeforeThisVisit(message)) continue', '', VANISH_T),
+    ('vanishing messages pulled from under you mid-visit', VANISH, '      if (keep) visible.push(message)', '', VANISH_T),
+    ("a message read here dropped if deleted before the server's word arrives", VANISH,
+     '(hasBeenSeen(message) || this.seenHere.has(id))', 'hasBeenSeen(message)', VANISH_T),
+    ('your own deleted message lingers until you leave', VANISH, ' && !this.letGoOf.has(id) && ', ' && ', VANISH_T),
+    ('your own messages marked seen', VANISH,
+     'const theirs = message.sender_id !== userId && !message.pending', 'const theirs = !message.pending', VANISH_T),
+    ('a photo counts as seen before it is opened', VANISH,
+     'return Boolean(message.has_media ? message.media_opened_at : message.seen_at)',
+     'return Boolean(message.seen_at || message.media_opened_at)', VANISH_T),
 ]
 
 missed = 0
