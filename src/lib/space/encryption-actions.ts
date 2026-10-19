@@ -58,7 +58,7 @@ export class EncryptionActions extends StoreActions {
     const key = await deriveKey(passphrase, salt)
     const check = await makeKeyCheck(key, spaceId)
     try {
-      await must(supabase.rpc('enable_e2e', { salt, check_value: check }))
+      await must(supabase.rpc('enable_space_e2e', { space: spaceId, salt, check_value: check }))
     } catch (e) {
       // Someone else turned it on first, so this device mustn't upgrade anything.
       this.upgradeFlag.clear()

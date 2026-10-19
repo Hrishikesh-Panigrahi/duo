@@ -1,13 +1,15 @@
 import { useEffect, useState } from 'react'
 import type { User } from '@supabase/supabase-js'
-import { isConfigured, serverError, supabase } from './lib/supabase'
+import { isConfigured } from './lib/supabase'
 import { SpaceProvider } from './lib/store'
-import { Button, Splash, Toaster, errorMessage, toast } from './components/ui'
+import { Button, Splash, Toaster, errorMessage } from './components/ui'
 import { ErrorBoundary } from './components/error-boundary'
 import { pendingInvite } from './lib/invite'
+import { lastOpenedSpace, loadMySpaceIds, spaceToOpen } from './lib/spaces'
 import { AuthLayout, AuthScreen, NewPasswordScreen, useAuth } from './features/auth'
 import { SpaceSetup } from './features/space-setup'
 import { Shell } from './features/shell'
+import { SpaceSwitchContext } from './features/space-switcher'
 
 export default function App() {
   return (
@@ -27,44 +29,57 @@ function Root() {
 }
 
 function SpaceGate({ user }: { user: User }) {
-  const { spaceId, setSpaceId, error, retry } = useMySpace(user.id)
-  if (error) {
-    return (
-      <AuthLayout subtitle="Couldn't reach the server.">
-        <p className="mb-6 text-center text-sm text-muted">{error}</p>
-        <Button className="w-full" onClick={retry}>
-          Try again
-        </Button>
-      </AuthLayout>
-    )
+  const mySpaces = useMySpaces(user.id)
+  const choice = useSpaceChoice()
+  if (mySpaces.error) return <ConnectionProblem error={mySpaces.error} onRetry={mySpaces.retry} />
+  if (mySpaces.spaceIds === undefined) return <Splash />
+  const currentId = choice.chosenId ?? spaceToOpen(mySpaces.spaceIds, lastOpenedSpace.get())
+  if (!currentId || choice.adding) {
+    const joined = (spaceId: string) => {
+      mySpaces.add(spaceId)
+      choice.open(spaceId)
+    }
+    return <SpaceSetup email={user.email ?? ''} onReady={joined} onCancel={currentId ? choice.stopAdding : undefined} />
   }
-  if (spaceId === undefined) return <Splash />
-  if (spaceId === null) return <SpaceSetup email={user.email ?? ''} onReady={setSpaceId} />
+  const spaceSwitch = { userId: user.id, spaceIds: mySpaces.spaceIds, currentId, open: choice.open, addSpace: choice.startAdding }
   return (
-    <SpaceProvider spaceId={spaceId} user={user}>
-      <Shell />
-    </SpaceProvider>
+    <SpaceSwitchContext.Provider value={spaceSwitch}>
+      {/* Keyed by space, so switching starts the store, the room and the key afresh. */}
+      <SpaceProvider key={currentId} spaceId={currentId} user={user}>
+        <Shell />
+      </SpaceProvider>
+    </SpaceSwitchContext.Provider>
   )
 }
 
-/** The space this account belongs to: undefined while loading, null if none yet. */
-function useMySpace(userId: string) {
-  const [spaceId, setSpaceId] = useState<string | null | undefined>(undefined)
+/** Which space is open, and whether the screen for starting or joining another one is showing. */
+function useSpaceChoice() {
+  const [chosenId, setChosenId] = useState<string | null>(null)
+  // An invite link opened while signed in goes straight to joining that space.
+  const [adding, setAdding] = useState(() => pendingInvite.get() !== null)
+  const open = (spaceId: string) => {
+    lastOpenedSpace.set(spaceId)
+    setChosenId(spaceId)
+    setAdding(false)
+  }
+  return { chosenId, adding, open, startAdding: () => setAdding(true), stopAdding: () => setAdding(false) }
+}
+
+/** The spaces this account is in, oldest first; undefined while loading. */
+function useMySpaces(userId: string) {
+  const [spaceIds, setSpaceIds] = useState<string[] | undefined>(undefined)
   const [error, setError] = useState<string | null>(null)
   const [attempt, setAttempt] = useState(0)
   useEffect(() => {
     let alive = true
-    const query = supabase.from('members').select('space_id').eq('user_id', userId).maybeSingle()
-    query.then(({ data: membership, error: queryError }) => {
-      if (!alive) return
-      if (queryError) return setError(errorMessage(serverError(queryError)))
-      // Each account belongs to one space, so an invite opened after joining one has nothing to do.
-      if (membership?.space_id && pendingInvite.get()) {
-        pendingInvite.clear()
-        toast("You're already in a space, so that invite wasn't used")
-      }
-      setSpaceId(membership?.space_id ?? null)
-    })
+    loadMySpaceIds(userId).then(
+      (ids) => {
+        if (alive) setSpaceIds(ids)
+      },
+      (e) => {
+        if (alive) setError(errorMessage(e))
+      },
+    )
     return () => {
       alive = false
     }
@@ -73,7 +88,19 @@ function useMySpace(userId: string) {
     setError(null)
     setAttempt((n) => n + 1)
   }
-  return { spaceId, setSpaceId, error, retry }
+  const add = (spaceId: string) => setSpaceIds((ids = []) => (ids.includes(spaceId) ? ids : [...ids, spaceId]))
+  return { spaceIds, error, retry, add }
+}
+
+function ConnectionProblem({ error, onRetry }: { error: string; onRetry: () => void }) {
+  return (
+    <AuthLayout subtitle="Couldn't reach the server.">
+      <p className="mb-6 text-center text-sm text-muted">{error}</p>
+      <Button className="w-full" onClick={onRetry}>
+        Try again
+      </Button>
+    </AuthLayout>
+  )
 }
 
 function NotConfigured() {

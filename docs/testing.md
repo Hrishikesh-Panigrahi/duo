@@ -23,7 +23,9 @@ node scripts/check-doc-names.cjs  # names in the docs' inline code spans still e
 | `room.test.ts` | Presence budget. Announcing whether this device can take files, only once subscribed, and leaving when hidden. Partner presence. Rejoin backoff. Sealed signals. Joining as a private channel. Ignoring replays (past and future timestamps), forgeries, junk, oversized signals and anything while locked. Passing the partner check through to the link |
 | `rows.test.ts` | The stored-rows reducer, including messages still being sent |
 | `direct.test.ts` | Transfer framing: headers, reassembly, non-binary chunks, and more bytes than promised. Answering only offers addressed to this phone from the other member, at most four transfers at once (outgoing ones count). The reason given when a transfer stops early |
-| `chat-actions.test.ts` | Opening a file whose claimed type isn't a photo or video as a plain download (`application/octet-stream`) |
+| `chat-actions.test.ts` | Opening a file whose claimed type isn't a photo or video as a plain download (`application/octet-stream`). Clearing waiting photos without touching another space's |
+| `content-actions.test.ts` | Renaming yourself only in the open space |
+| `spaces.test.ts` | Which space opens. The switcher's names, decrypted with each space's own key, and a space shown as locked without its plaintext name. Unread counts: only their messages since the stored last-read time, and none asked for when there isn't one |
 | `session.test.ts` | Sign-out wiping this device's keys and waiting photos before ending the session, and still signing out if that fails |
 | `invite.test.ts` | Invite links and codes, and dropping saved invites after two weeks |
 | `media.test.ts` | The video size limit, photo scaling, the 24-hour expiry, the `PLAYABLE_TYPE` pattern, refusing to send anything else, storage paths |
@@ -41,7 +43,7 @@ Tests that need WebCrypto use Node's built-in `crypto.subtle`. Nothing here talk
 ### Mutation suite (`scripts/mutate.py`)
 
 The script holds a fixed list of mutants (`MUTANTS`), each breaking one check in `room.ts`, `view.ts`, `direct.ts`, `invite.ts`,
-`media.ts`, `e2e.ts`, `chat-actions.ts` or `session.ts`. For each one it runs the test file that should notice, prints `CAUGHT` or `MISSED`, and always puts the
+`media.ts`, `e2e.ts`, `chat-actions.ts`, `session.ts`, `spaces.ts` or `content-actions.ts`. For each one it runs the test file that should notice, prints `CAUGHT` or `MISSED`, and always puts the
 file back byte for byte (LF or CRLF). `CAUGHT` only means vitest exited non-zero, so confirm a real failing test (`×`) is listed under it.
 A crash would also count. The script exits 1 if anything was `MISSED`.
 

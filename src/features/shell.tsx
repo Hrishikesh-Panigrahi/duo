@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { BookUser, ListChecks, MessageCircle, Settings, StickyNote } from 'lucide-react'
+import { BookUser, ChevronDown, ListChecks, MessageCircle, Settings, StickyNote } from 'lucide-react'
 import { useSpace, type SpaceActions } from '../lib/store'
 import { useDocumentVisible } from '../lib/device'
+import { lastReadKey } from '../lib/spaces'
 import { deviceStorage } from '../lib/device-storage'
 import type { Member, Message } from '../lib/types'
 import { Avatar, Button, IconButton, Splash, cx, toast, toastError } from '../components/ui'
@@ -10,6 +11,7 @@ import { ContactsTab } from './contacts'
 import { ListsTab } from './lists'
 import { NotesTab } from './notes'
 import { SettingsSheet } from './settings'
+import { SpaceSwitcherSheet } from './space-switcher'
 import { NavContext, type Nav, type Tab } from './nav'
 import { NameScreen, SetUpScreen, UnlockScreen } from './encryption'
 
@@ -66,17 +68,19 @@ function ShellReady() {
   const { space, userId, messages, actions } = useSpace()
   const nav = useNavState()
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [switcherOpen, setSwitcherOpen] = useState(false)
   const unread = useUnreadCount(space!.id, messages, userId, nav.tab === 'chat')
   useUnreadBadge(unread)
   useTidyUpOnce(actions)
   return (
     <NavContext.Provider value={nav}>
       <div className="app-height mx-auto flex max-w-2xl flex-col sm:border-x sm:border-line">
-        <ShellHeader onSettings={() => setSettingsOpen(true)} />
+        <ShellHeader onSettings={() => setSettingsOpen(true)} onSwitchSpace={() => setSwitcherOpen(true)} />
         <TabPanels tab={nav.tab} />
         <TabBar tab={nav.tab} unread={unread} onSelect={nav.setTab} />
       </div>
       <SettingsSheet open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <SpaceSwitcherSheet open={switcherOpen} onClose={() => setSwitcherOpen(false)} />
     </NavContext.Provider>
   )
 }
@@ -119,7 +123,7 @@ function useNavState(): Nav {
 // Only server timestamps are compared, so a skewed phone clock can't hide messages.
 function useUnreadCount(spaceId: string, messages: Message[], userId: string, chatOpen: boolean): number {
   const visible = useDocumentVisible()
-  const readKey = `duo:lastRead:${spaceId}`
+  const readKey = lastReadKey(spaceId)
   const newestDelivered = messages.findLast((m) => !m.pending)
   const [lastReadAt, setLastReadAt] = useState(() => deviceStorage.get(readKey) ?? newestDelivered?.created_at ?? new Date(0).toISOString())
   useEffect(() => {
@@ -151,7 +155,7 @@ function partnerStatus(partner: Member | null, typing: boolean, online: boolean)
   return name
 }
 
-function ShellHeader({ onSettings }: { onSettings: () => void }) {
+function ShellHeader({ onSettings, onSwitchSpace }: { onSettings: () => void; onSwitchSpace: () => void }) {
   const { space, partner, partnerOnline, partnerTyping } = useSpace()
   const status = partnerStatus(partner, partnerTyping, partnerOnline)
   return (
@@ -161,10 +165,13 @@ function ShellHeader({ onSettings }: { onSettings: () => void }) {
           <Avatar name={partner?.display_name ?? space?.name ?? 'Duo'} size={36} />
           {partnerOnline && <span className="absolute -right-0.5 -bottom-0.5 size-3 rounded-full border-2 border-bg bg-online" />}
         </span>
-        <div className="min-w-0 flex-1">
-          <div className="truncate leading-tight font-semibold">{space?.name ?? 'Our space'}</div>
-          <div className={cx('truncate text-xs', partnerTyping ? 'text-accent' : 'text-muted')}>{status}</div>
-        </div>
+        <button onClick={onSwitchSpace} aria-haspopup="dialog" className="min-w-0 flex-1 text-left">
+          <span className="flex items-center gap-1 leading-tight font-semibold">
+            <span className="truncate">{space?.name ?? 'Our space'}</span>
+            <ChevronDown className="size-4 shrink-0 text-muted" />
+          </span>
+          <span className={cx('block truncate text-xs', partnerTyping ? 'text-accent' : 'text-muted')}>{status}</span>
+        </button>
         <IconButton label="Settings" onClick={onSettings}>
           <Settings />
         </IconButton>

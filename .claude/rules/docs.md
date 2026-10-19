@@ -23,7 +23,7 @@ the repo (see below). Follow the `update-docs` skill (`.claude/skills/update-doc
 **Words that need checking**
 - Check absolute words ("only", "never", "every", "all", "nothing", "can't") for exceptions, and name them. For
   example: inside a space, screens get data and actions from `useSpace()`. Sign-out goes through `signOut()`, and
-  the auth screens (sign-in, sign-up, password reset, new password), space setup and `App`'s space lookup call
+  the auth screens (sign-in, sign-up, password reset, new password), space setup and the list of your spaces (`src/lib/spaces.ts`) call
   Supabase directly.
 - Present a list as complete only if it is. "The server sees X and Y" must be every visible thing, or say
   "for example".

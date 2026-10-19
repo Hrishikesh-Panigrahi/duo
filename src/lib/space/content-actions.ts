@@ -145,7 +145,8 @@ export class NameActions extends StoreActions {
   async renameMe(name: string) {
     const { spaceId, userId } = this.store
     const encryptedName = { display_name_cipher: await this.writer.seal(contexts.memberName(spaceId, userId), name), display_name: null }
-    await must(supabase.from('members').update(encryptedName).eq('user_id', userId))
+    // Only this space's row: each space seals your name with its own key.
+    await must(supabase.from('members').update(encryptedName).eq('space_id', spaceId).eq('user_id', userId))
     this.store.setMembers((members) => members.map((m) => (m.user_id === userId ? { ...m, ...encryptedName } : m)))
   }
 }

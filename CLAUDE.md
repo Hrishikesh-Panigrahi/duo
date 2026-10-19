@@ -1,6 +1,8 @@
 # Duo
 
 A private PWA for two people: a shared contact book, chat, lists, notes and view-once photos and videos.
+Each space has at most two members (one until the other joins); one account can be in up to 20 spaces (enforced
+by `create_space` and `join_space`) and switches between them.
 React 19 + Vite 8 + Tailwind 4 + TypeScript 7 on the front, Supabase (Postgres, Auth, Storage, Realtime) behind it.
 Content is encrypted on the phone, so the server stores it only as ciphertext. Ids, membership, timestamps and
 media flags are plaintext, and rows from before encryption can still be plaintext.
@@ -29,6 +31,8 @@ Before a PR: `npm run typecheck`, `npm test`, `python scripts/mutate.py`, `node 
 - `src/lib/store.tsx`: `SpaceProvider` (through `useSpaceStore`) wires together rows, sync, device-key, plaintext,
   view, room, store-actions and the `*-actions.ts` classes from `src/lib/space/`. It also adds the partner-typing timer
   and reload-on-foreground. `useSpace()` reads the result; `useAuthorName` is here too.
+- `src/lib/spaces.ts`: the spaces you're in, which one opens, and the switcher's summary of each
+  (`src/features/space-switcher.tsx`).
 - `src/lib/direct.ts`: phone-to-phone WebRTC transfer. `src/lib/inbox.ts` keeps files received that way, still encrypted.
 - `src/features/`: screens and sheets grouped by feature (some files hold several), plus `nav.ts` and `list-parts.tsx`.
 - `src/components/`: shared UI (`ui.tsx`, including `MenuItem` and `errorMessage`), `useBusy`, `useLongPress`, `ErrorBoundary`.

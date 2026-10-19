@@ -51,7 +51,8 @@ Cloudflare's STUN server (`stun.cloudflare.com`) sees both phones' IP addresses 
 - Posting messages that show as "Couldn't decrypt this message".
 - Marking view-once media sent to that person as opened.
 - Faking typing and presence.
-- Setting the passphrase with `enable_e2e` if encryption isn't on yet.
+- Setting the passphrase for any of that person's spaces that isn't encrypted yet, with `enable_space_e2e` (or
+  `enable_e2e` while they're in exactly one space).
 
 **Clearing `e2e_salt`.** `Shell` decides whether to show the setup screen from `spaces.e2e_salt` alone. Setting
 up again makes a new salt, so the old ciphertext stops decrypting. It also arms the one-time upgrade, which then

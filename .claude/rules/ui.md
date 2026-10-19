@@ -14,8 +14,8 @@ paths:
   `contact-form`, `contact-import`), not into one-line wrappers.
 - Inside `SpaceProvider`, screens read data and call actions through `useSpace()`, for example
   `useSpace().actions.chat.send({ body })`. The exceptions: sign-out goes through `signOut()` in
-  `src/lib/session.ts`, and sign-in (`auth.tsx`), space setup (`space-setup.tsx`) and `App`'s space lookup call
-  Supabase directly because they run before a space exists.
+  `src/lib/session.ts`, and sign-in (`auth.tsx`), space setup (`space-setup.tsx`) and the list of your spaces (`src/lib/spaces.ts`) call
+  Supabase directly because they work outside the open space.
 - Use `useBusy` for a form's save-and-report, and `deviceStorage` for small values kept in this browser
   (localStorage). Keys and received files live in IndexedDB (`keystore.ts`, `inbox.ts`).
 

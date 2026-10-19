@@ -92,8 +92,15 @@ function useSpaceSetup(onReady: (spaceId: string) => void) {
   return { joiningFromInvite, mode, code, setCode, busy, error, submit, switchTo }
 }
 
-/** First run after signing in: start a space, or join your person's with their code or invite link. */
-export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceId: string) => void }) {
+type SpaceSetupProps = {
+  email: string
+  onReady: (spaceId: string) => void
+  /** Set when you already have a space to go back to. */
+  onCancel?: () => void
+}
+
+/** Start a space, or join your person's with their code or invite link. */
+export function SpaceSetup({ email, onReady, onCancel }: SpaceSetupProps) {
   const setup = useSpaceSetup(onReady)
   return (
     <AuthLayout subtitle={`Signed in as ${email}`}>
@@ -111,7 +118,13 @@ export function SpaceSetup({ email, onReady }: { email: string; onReady: (spaceI
           {setup.mode === 'create' ? 'Create space' : 'Join'}
         </Button>
       </form>
-      <SignOutLink />
+      {onCancel ? (
+        <button className="mx-auto mt-6 block text-sm text-muted" onClick={onCancel}>
+          Back
+        </button>
+      ) : (
+        <SignOutLink />
+      )}
     </AuthLayout>
   )
 }

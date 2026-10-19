@@ -1,6 +1,8 @@
 # Duo
 
-A private little app for two people: one shared contact book, a chat, shared lists and notes.
+A private little app for two people: one shared contact book, a chat, shared lists and notes. Each "space" is
+for you and one other person, and you can be in several (a partner, a sibling, a friend): tap the space's name at
+the top to switch, or to start or join another.
 It's an installable web app (PWA): open it on your phones, "Add to Home Screen", and it behaves like a normal app.
 
 - **Contacts**: one book for both of you, with search, tags, favourites, birthdays and notes. Call, text, WhatsApp or email in one tap.
@@ -118,6 +120,7 @@ src/lib/store.tsx      a space's data for the screens (useSpace), wiring togethe
   *-actions.ts           everything the screens can do, as useSpace().actions.chat / .contacts / .notes /
                          .lists / .names / .encryption
 src/lib/contact-match.ts  finding a likely duplicate contact, and searching the contact book
+src/lib/spaces.ts      the spaces you're in: which one opens, and what the space switcher shows for each
 src/lib/direct.ts      phone-to-phone delivery of photos and videos over WebRTC
 src/lib/inbox.ts       where a directly delivered file waits, still encrypted, until it's opened
 src/lib/media.ts       view-once photos and videos: shrinking, size limits, expiry

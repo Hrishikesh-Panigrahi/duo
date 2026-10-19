@@ -25,12 +25,21 @@ Things that have cost time before. Add to this when something surprises you.
   `data-keyboard-open` attribute in the same handler, and CSS hides the tab bar from that attribute. Hiding it with
   React state instead renders a frame late, so the message box jumps about 56px as the keyboard opens and closes.
 
+## Several spaces per account
+
+- **Anything kept per account must say which space.** A member row is found by `space_id` and `user_id` together:
+  `renameMe` once filtered by `user_id` alone and would have renamed you in every space. Per-space device storage
+  keys (`duo:lastRead:<space>`, `duo:upgrade:<space>`) include the space id; `duo:space`, `duo:tab` and
+  `duo:invite` are shared by every space.
+- **Waiting photos are shared.** `duo-inbox` holds every space's directly delivered files, so a space must not treat
+  a file it can't match to one of its messages as an orphan.
+
 ## Database
 
 - **Ciphertext checks are `NOT VALID`.** They block plaintext on every new insert or update, but rows from before
   encryption can still be plaintext. Code must not assume every row has a `cipher`.
 - **A `spaces` or `members` row from before encryption** fails any update until its plaintext name is cleared.
-  - For spaces, `enable_e2e` and `join_space` (`direct_media` migration) and `renameSpace` clear it.
+  - For spaces, turning encryption on (`enable_e2e`, `enable_space_e2e`), `join_space` and `renameSpace` clear it.
   - For members, `renameMe` clears `display_name`.
 - **Messages can't be updated** (there's no UPDATE grant). A legacy message is swapped for an encrypted copy by
   `encrypt_legacy_message`, and only its sender can do that.
