@@ -1,7 +1,7 @@
 -- Many spaces per person.
 --
 -- A person can now start or join several spaces (one with a partner, one with
--- a sibling, ...). Each space still has exactly two members: its invite code is
+-- a sibling, ...). Each space still has at most two members: its invite code is
 -- cleared once the second person joins. Because a person may be in several
 -- spaces, turning encryption on now names the space it's for.
 
