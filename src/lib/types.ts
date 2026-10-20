@@ -32,6 +32,8 @@ export type StoredSpace = {
   name_cipher: string | null
   /** Plaintext from before encryption. */
   name: string | null
+  /** New messages vanish once they've been seen (see src/lib/vanish.ts). */
+  vanish_mode?: boolean
 }
 
 export type StoredMember = {
@@ -56,6 +58,10 @@ export type StoredMessage = Stored & {
   media_opened_at?: string | null
   /** Sent straight to the other phone, so there's no copy in Storage. */
   media_direct?: boolean
+  /** Sent in vanish mode: deleted once it has been seen. */
+  vanishing?: boolean
+  /** When the person it was sent to saw it (vanishing messages only). */
+  seen_at?: string | null
   /** Client-only: shown before the server confirms. */
   pending?: boolean
 }
@@ -89,6 +95,8 @@ export type Message = {
   has_media: boolean
   media_opened_at: string | null
   media_direct: boolean
+  vanishing: boolean
+  seen_at: string | null
   pending?: boolean
   /** Encrypted, and this device can't read it yet. */
   locked?: boolean

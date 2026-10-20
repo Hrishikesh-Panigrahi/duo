@@ -67,6 +67,22 @@ export class ChatActions extends StoreActions {
     return (await this.sweepStorage(messagesById)) + (await this.sweepInbox(messagesById))
   }
 
+  /** Either of you can turn vanish mode on or off; it applies to messages sent from then on. */
+  async setVanishMode(turnOn: boolean) {
+    await must(supabase.rpc('set_vanish_mode', { space: this.store.spaceId, turn_on: turnOn }))
+    this.store.setSpace((space) => space && { ...space, vanish_mode: turnOn })
+  }
+
+  /** Their vanishing messages have been on your screen. */
+  async markVanishingSeen(messageIds: string[]) {
+    await must(supabase.rpc('mark_vanishing_seen', { message_ids: messageIds }))
+  }
+
+  /** Deletes this space's vanishing messages that have been seen, for both of you. */
+  async clearSeenVanishing() {
+    await must(supabase.rpc('clear_seen_vanishing', { space: this.store.spaceId }))
+  }
+
   async remove(id: string) {
     const row = this.store.rows.current.messages.find((x) => x.id === id)
     await this.writer.deleteRow('messages', id)

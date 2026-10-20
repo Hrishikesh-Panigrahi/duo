@@ -5,7 +5,8 @@ import { signOut } from '../lib/session'
 import type { Member } from '../lib/types'
 import { formatDay, toLocalYMD } from '../lib/dates'
 import { isIOS, isStandalone, useInstallPrompt } from '../lib/device'
-import { Avatar, Button, Field, Input, Sheet, toast, toastError } from '../components/ui'
+import { Avatar, Button, Field, Input, Sheet, Switch, toast, toastError } from '../components/ui'
+import { useBusy } from '../components/use-busy'
 import { InviteCode } from './space-setup'
 
 export function SettingsSheet({ open, onClose }: { open: boolean; onClose: () => void }) {
@@ -25,6 +26,26 @@ function Section({ title, children }: { title: string; children: ReactNode }) {
   )
 }
 
+/** Either of you can turn it on or off; it applies to messages sent from then on. */
+function VanishModeSection() {
+  const { space, actions } = useSpace()
+  const { busy, error, run } = useBusy()
+  const on = Boolean(space?.vanish_mode)
+  const turn = (next: boolean) => void run(() => actions.chat.setVanishMode(next), { idleAfterSuccess: true })
+  return (
+    <Section title="Chat">
+      <div className="flex items-start gap-3">
+        <div className="flex-1">
+          <p className="text-sm font-medium">Vanish mode</p>
+          <p className="text-xs text-muted">New messages disappear once they've been seen and the chat is closed, for both of you.</p>
+        </div>
+        <Switch checked={on} onChange={turn} label="Vanish mode" disabled={busy} />
+      </div>
+      {error && <p className="text-sm text-danger">{error}</p>}
+    </Section>
+  )
+}
+
 function SettingsBody() {
   const { space, me, actions } = useSpace()
   return (
@@ -34,6 +55,7 @@ function SettingsBody() {
         <NameField label="Your name" maxLength={40} savedName={me?.display_name} onSave={(name) => actions.names.renameMe(name)} />
       </Section>
       <PartnerSection />
+      <VanishModeSection />
       <EncryptionSection />
       {!isStandalone() && <InstallSection />}
       <AccountSection />

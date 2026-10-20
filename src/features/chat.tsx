@@ -1,10 +1,12 @@
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject, type UIEvent } from 'react'
-import { ArrowUp, ContactRound, Copy, Download, Image, ImagePlus, Lock, MessageCircleHeart, NotebookPen, Plus, Trash } from 'lucide-react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject, type UIEvent } from 'react'
+import { ArrowUp, ContactRound, Copy, Download, EyeOff, Image, ImagePlus, Lock, MessageCircleHeart, NotebookPen, Plus, Trash } from 'lucide-react'
 import { useSpace } from '../lib/store'
 import { toCard, type Contact, type Message } from '../lib/types'
 import { downloadVCard, type ContactCard } from '../lib/vcard'
 import { toLocalYMD } from '../lib/dates'
-import { isTouch } from '../lib/device'
+import { isTouch, useDocumentVisible } from '../lib/device'
+import { ChatVisit, messageIdsInView, vanishingToMarkSeen } from '../lib/vanish'
+import type { ChatActions } from '../lib/space/chat-actions'
 import { Avatar, Button, EmptyState, IconButton, MenuItem, Sheet, cx, toast, toastError } from '../components/ui'
 import { useLongPress } from '../components/long-press'
 import { useBusy } from '../components/use-busy'
@@ -22,6 +24,10 @@ const GROUP_GAP_MS = 3 * 60_000
 const URL_RE = /(https?:\/\/[^\s<]+[^\s<.,:;"')\]}!?])/g
 // 1–3 emoji and nothing else; each may carry a skin tone or U+FE0F, or be joined by U+200D into one glyph.
 const ONE_TO_THREE_EMOJI = /^(?:\p{Extended_Pictographic}(?:\u{FE0F}|[\u{1F3FB}-\u{1F3FF}]|\u{200D}\p{Extended_Pictographic}\u{FE0F}?)*\s*){1,3}$/u
+// Out of the chat there's nothing to mark seen (one array, so effects don't rerun for nothing).
+const NO_IDS: string[] = []
+// The app only counts as left after this long out of view, so picking a photo or glancing away keeps you in the chat.
+const AWAY_AFTER_MS = 30_000
 // Within this many pixels of the end still counts as being at the bottom.
 const NEAR_BOTTOM_PX = 80
 
@@ -38,11 +44,14 @@ function dayLabel(iso: string) {
 }
 
 export function ChatTab({ active }: { active: boolean }) {
-  const { messages, actions } = useSpace()
-  const scroll = useStickToBottom(messages, active)
+  const { actions } = useSpace()
+  const scroller = useRef<HTMLDivElement>(null)
+  const chat = useChatVisit(active, scroller)
+  const scroll = useStickToBottom(scroller, chat.visible, active)
   return (
     <div className="flex h-full flex-col">
-      <MessageList messages={messages} scroller={scroll.ref} onScroll={scroll.onScroll} />
+      <VanishModeBanner />
+      <MessageList messages={chat.visible} scroller={scroller} onScroll={scroll.onScroll} onDeleting={chat.letGo} />
       <Composer
         onSend={(message) => {
           scroll.stickToBottom()
@@ -58,9 +67,92 @@ export function ChatTab({ active }: { active: boolean }) {
   )
 }
 
+/** The chat as this visit shows it: in vanish mode, seen messages are gone next time, never while you're here. */
+function useChatVisit(active: boolean, scroller: RefObject<HTMLDivElement | null>) {
+  const { messages, userId, actions } = useSpace()
+  const { inChat, visitNumber } = useInChat(active)
+  // A fresh visit each time you come into the chat.
+  const visit = useMemo(() => new ChatVisit(), [inChat, visitNumber])
+  const visible = useMemo(() => visit.visible(messages), [visit, messages])
+  const anyVanishing = messages.some((message) => message.vanishing)
+  useClearSeenAsYouComeAndGo(inChat && anyVanishing, visitNumber, actions.chat)
+  const candidates = useMemo(() => (inChat ? vanishingToMarkSeen(visible, userId) : NO_IDS), [inChat, visible, userId])
+  useMarkSeenWhenInView(candidates, scroller, (ids) => {
+    const fresh = visit.takeNewlySeen(ids)
+    if (fresh.length > 0) actions.chat.markVanishingSeen(fresh).catch(() => {})
+  })
+  return { visible, letGo: (id: string) => visit.letGo(id) }
+}
+
+/** Whether you're in the chat, and which visit this is. A short trip out of the app doesn't end a visit; a long one does. */
+function useInChat(active: boolean) {
+  const visible = useDocumentVisible()
+  const hiddenAt = useRef<number | null>(null)
+  const [away, setAway] = useState(false)
+  const [visitNumber, setVisitNumber] = useState(0)
+  useEffect(() => {
+    if (!visible) {
+      hiddenAt.current = Date.now()
+      const timer = setTimeout(() => setAway(true), AWAY_AFTER_MS)
+      return () => clearTimeout(timer)
+    }
+    // A phone may freeze a hidden page, so the timer can't be trusted: measure the time away instead.
+    if (hiddenAt.current !== null && Date.now() - hiddenAt.current >= AWAY_AFTER_MS) setVisitNumber((n) => n + 1)
+    hiddenAt.current = null
+    setAway(false)
+  }, [visible])
+  return { inChat: active && !away, visitNumber }
+}
+
+/** Deletes the space's seen vanishing messages when you come into the chat and again when you leave it. */
+function useClearSeenAsYouComeAndGo(inChatWithVanishing: boolean, visitNumber: number, chat: ChatActions) {
+  useEffect(() => {
+    if (!inChatWithVanishing) return
+    const clear = () => chat.clearSeenVanishing().catch(() => {})
+    void clear()
+    return () => {
+      void clear()
+    }
+  }, [inChatWithVanishing, visitNumber, chat])
+}
+
+/** Calls `onSeen` with the candidates actually in view: scrolled to, with no sheet or photo viewer open over the chat. */
+function useMarkSeenWhenInView(candidates: string[], scroller: RefObject<HTMLDivElement | null>, onSeen: (ids: string[]) => void) {
+  const checkNow = useRef(() => {})
+  checkNow.current = () => {
+    const list = scroller.current
+    if (!list || candidates.length === 0 || document.querySelector('dialog[open]')) return
+    const inView = messageIdsInView(list)
+    const ids = candidates.filter((id) => inView.has(id))
+    if (ids.length > 0) onSeen(ids)
+  }
+  useEffect(() => checkNow.current(), [candidates])
+  useEffect(() => {
+    const list = scroller.current
+    const recheck = () => checkNow.current()
+    list?.addEventListener('scroll', recheck, { passive: true })
+    // A sheet or the photo viewer closing shows the chat again.
+    document.addEventListener('close', recheck, true)
+    return () => {
+      list?.removeEventListener('scroll', recheck)
+      document.removeEventListener('close', recheck, true)
+    }
+  }, [scroller])
+}
+
+function VanishModeBanner() {
+  const { space } = useSpace()
+  if (!space?.vanish_mode) return null
+  return (
+    <div className="flex shrink-0 items-center justify-center gap-1.5 border-b border-line bg-surface-2 px-3 py-1.5 text-xs text-muted">
+      <EyeOff className="size-3.5" />
+      Vanish mode: new messages disappear once seen and the chat is closed.
+    </div>
+  )
+}
+
 /** Keeps the newest message in view while you're at the bottom, even as the keyboard opens. */
-function useStickToBottom(messages: Message[], active: boolean) {
-  const ref = useRef<HTMLDivElement>(null)
+function useStickToBottom(ref: RefObject<HTMLDivElement | null>, messages: Message[], active: boolean) {
   const atBottom = useRef(true)
   useLayoutEffect(() => {
     const el = ref.current
@@ -76,7 +168,6 @@ function useStickToBottom(messages: Message[], active: boolean) {
     return () => viewport?.removeEventListener('resize', follow)
   }, [])
   return {
-    ref,
     onScroll: (e: UIEvent<HTMLDivElement>) => {
       const el = e.currentTarget
       const distanceFromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
@@ -89,9 +180,15 @@ function useStickToBottom(messages: Message[], active: boolean) {
   }
 }
 
-type MessageListProps = { messages: Message[]; scroller: RefObject<HTMLDivElement | null>; onScroll: (e: UIEvent<HTMLDivElement>) => void }
+type MessageListProps = {
+  messages: Message[]
+  scroller: RefObject<HTMLDivElement | null>
+  onScroll: (e: UIEvent<HTMLDivElement>) => void
+  /** You're deleting this message. */
+  onDeleting: (id: string) => void
+}
 
-function MessageList({ messages, scroller, onScroll }: MessageListProps) {
+function MessageList({ messages, scroller, onScroll, onDeleting }: MessageListProps) {
   const { userId } = useSpace()
   const [menuFor, setMenuFor] = useState<Message | null>(null)
   const [viewing, setViewing] = useState<Message | null>(null)
@@ -109,7 +206,7 @@ function MessageList({ messages, scroller, onScroll }: MessageListProps) {
           <MessageRow key={message.id} message={message} prev={messages[i - 1]} mine={message.sender_id === userId} onMenu={setMenuFor} onOpenMedia={setViewing} />
         ))}
       </div>
-      <MessageMenu message={menuFor} mine={menuFor?.sender_id === userId} onClose={() => setMenuFor(null)} />
+      <MessageMenu message={menuFor} mine={menuFor?.sender_id === userId} onClose={() => setMenuFor(null)} onDeleting={onDeleting} />
       <MediaViewer message={viewing} onClose={() => setViewing(null)} />
     </>
   )
@@ -159,7 +256,7 @@ function MessageRow({ message, prev, ...bubble }: Omit<BubbleProps, 'grouped'> &
 function Bubble({ message, mine, grouped, onMenu, onOpenMedia }: BubbleProps) {
   const press = useLongPress(() => onMenu(message))
   return (
-    <div className={cx('flex', mine ? 'justify-end' : 'justify-start', grouped ? 'mt-0.5' : 'mt-2.5')}>
+    <div data-message-id={message.id} className={cx('flex', mine ? 'justify-end' : 'justify-start', grouped ? 'mt-0.5' : 'mt-2.5')}>
       <div {...press} className={cx('no-callout max-w-[82%] transition-opacity', message.pending && 'opacity-60')}>
         <BubbleContent message={message} mine={mine} grouped={grouped} onOpenMedia={onOpenMedia} />
       </div>
@@ -280,8 +377,14 @@ function menuTitle(message: Message | null): string {
   return message.media?.kind === 'video' ? 'Video' : 'Photo'
 }
 
-function MessageMenu({ message, mine, onClose }: { message: Message | null; mine: boolean; onClose: () => void }) {
+type MessageMenuProps = { message: Message | null; mine: boolean; onClose: () => void; onDeleting: (id: string) => void }
+
+function MessageMenu({ message, mine, onClose, onDeleting }: MessageMenuProps) {
   const { actions, partner } = useSpace()
+  const deleteMessage = (id: string) => {
+    onDeleting(id)
+    return actions.chat.remove(id)
+  }
   return (
     <Sheet open={!!message} onClose={onClose} title={menuTitle(message)}>
       {message && (
@@ -293,7 +396,7 @@ function MessageMenu({ message, mine, onClose }: { message: Message | null; mine
             </MenuItem>
           )}
           {mine && !message.pending && (
-            <MenuItem danger icon={<Trash />} onClick={closeThen(onClose, () => actions.chat.remove(message.id), 'Deleted')}>
+            <MenuItem danger icon={<Trash />} onClick={closeThen(onClose, () => deleteMessage(message.id), 'Deleted')}>
               Delete for you and {partner?.display_name ?? 'them'}
             </MenuItem>
           )}

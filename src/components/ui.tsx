@@ -51,6 +51,23 @@ export function Button({ variant = 'primary', size = 'md', loading, icon, classN
   )
 }
 
+/** An on/off switch. `label` names what it turns on, for screen readers. */
+export function Switch({ checked, onChange, label, disabled }: { checked: boolean; onChange: (next: boolean) => void; label: string; disabled?: boolean }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cx('relative h-7 w-12 shrink-0 rounded-full transition disabled:opacity-50', checked ? 'bg-accent' : 'bg-line')}
+    >
+      <span className={cx('absolute top-0.5 size-6 rounded-full bg-white shadow transition-all', checked ? 'left-[1.375rem]' : 'left-0.5')} />
+    </button>
+  )
+}
+
 export function IconButton({ label, className, children, ...rest }: ButtonHTMLAttributes<HTMLButtonElement> & { label: string }) {
   return (
     <button

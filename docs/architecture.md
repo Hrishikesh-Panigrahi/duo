@@ -129,6 +129,37 @@ Other devices get each change over Realtime and decrypt it themselves.
 
   Nothing on the server deletes or expires files, and the read policy doesn't check age.
 
+## Vanish mode
+
+Either person turns it on or off for the space in Settings (`set_vanish_mode`); a banner in the chat shows while
+it's on.
+
+- **What vanishes:** messages sent while it's on. A trigger sets `messages.vanishing` from the space when a message
+  is sent, so the sending app can't send a non-vanishing message while it's on. A message the one-time upgrade
+  re-inserts keeps its old time and doesn't vanish. Messages sent before vanish mode was turned on are kept.
+- **Seen:** the person a message was sent to marks it seen (`mark_vanishing_seen`, which sets `seen_at`) once at
+  least half of it is in view in the chat list, with no sheet or photo viewer open over it, while the Chat tab is
+  open and the app is on screen. Any of their devices can do this. A message this device can't decrypt isn't
+  marked. A photo or video counts as seen once it's opened.
+- **Deleted:** when a device comes into the chat or leaves it while it has any vanishing message loaded, it calls
+  `clear_seen_vanishing` (failures are ignored). That deletes the space's seen vanishing messages on the server, and
+  vanishing photos and videos that expired unopened (after 24 hours). Marking seen and deleting are done by the apps.
+- **What never vanishes:** a message nobody has seen yet, one this device can't decrypt, and one older than the
+  newest 500 messages, which isn't loaded.
+- **A visit** (`ChatVisit` in `src/lib/vanish.ts`) lasts from opening the chat until you leave it. Leaving means:
+  - another tab, another space, locking or signing out;
+  - the app out of view for 30 seconds or more (`AWAY_AFTER_MS` in `src/features/chat.tsx`). A shorter trip, such as
+    picking a photo, doesn't count;
+  - sheets and the photo viewer don't end a visit.
+- **What a visit shows:**
+  - A vanishing message that was already seen when it first appears in a visit is hidden.
+  - One seen during the visit, by the server's record or by this device, stays on screen until you leave, even if
+    it's deleted meanwhile.
+  - One you delete yourself, or one deleted before anyone saw it, goes at once.
+  - This compares states, not clocks, so a phone's wrong time can't make messages vanish early or stay.
+- **Known gap:** coming back after a long time away, the new visit can start before the reload brings fresh rows. A
+  message seen meanwhile may then show for that visit, or appear briefly before its deletion arrives.
+
 ## Database
 
 [supabase/migrations/](../supabase/migrations/), in order:
@@ -156,6 +187,13 @@ Other devices get each change over Realtime and decrypt it themselves.
      advisory lock) so simultaneous calls can't get past the cap. `join_space` also refuses your own space's code.
    - `enable_space_e2e(space, salt, check_value)`. The older `enable_e2e(salt, check_value)` now works only for
      an account in exactly one space, for app versions from before this migration.
+6. **`vanish_mode`:**
+   - `spaces.vanish_mode`, and `messages.vanishing` / `messages.seen_at`.
+   - A trigger sets `vanishing` from the space on every insert (false for a message re-inserted with an older
+     time), and starts `seen_at` empty.
+   - `set_vanish_mode` (members only); `mark_vanishing_seen` (the recipient only, not photos or videos);
+     `clear_seen_vanishing` (members only), which also deletes vanishing photos and videos that expired unopened.
+     All three are callable by signed-in users only.
 
 All the ciphertext-only checks are `NOT VALID`: every new insert or update must pass, but rows from before
 encryption are left alone. Content rows are upgraded in place. Messages can't be updated, so they're swapped for
