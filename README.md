@@ -97,15 +97,6 @@ served from the same box behind Caddy or nginx with a TLS certificate. Trade-off
 - **Oracle reclaims idle Always Free VMs.** Check their current policy; a two-person app sits mostly idle.
 - In exchange: no project pausing, no 500 MB database cap, and your data lives on a machine you control.
 
-### Free-plan limits worth knowing
-
-- **Database: 500 MB.** Text is tiny, so that's well over a million messages. If it fills up, the database turns
-  read-only; nothing is charged.
-- **File storage: 1 GB, 50 MB per file.** Only photos and videos sent while the other person is away are stored,
-  and they're deleted once opened or after 24 hours, so this stays nearly empty.
-- **Data transfer: 5 GB a month** (plus 5 GB cached). Photos barely count; large videos do.
-- **Free projects pause after a week of no use**; resume them from the Supabase dashboard.
-
 ## How it's put together
 
 ```
